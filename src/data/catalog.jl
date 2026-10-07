@@ -7,18 +7,18 @@
     Provides database-like functionality for discovering, accessing, and managing
     oceanographic and geographic datasets with metadata, location tracking,
     versioning, and querying capabilities.
-    """
-module GeoDataCatalog
+"""
+module CatalogModule
 
 using ..GeoDataCoreTypes
 using ..GeoDataRegistry
+
 using Dates
 using UUIDs
 using SHA
 using JSON3
 using Interpolations
 using DataFrames
-using DelimitedFiles
 using Downloads
 using TranscodingStreams
 using HTTP
@@ -35,7 +35,7 @@ using HTTP
     This is the core metadata record that tracks what datasets are available,
     where they are located, and how to access them.
 """
-@kwdef struct DatasetEntry
+@kwdef mutable struct DatasetEntry
     # Core identification
     uuid::UUID = UUIDs.uuid4()                    # Unique identifier for this entry
     name::String = ""                             # Human-readable name
@@ -59,6 +59,12 @@ using HTTP
     credits::String = ""                          # Attribution/citation requirements
     license::String = ""                          # License information
     notes::String = ""                            # Additional notes
+    
+    # Lakehouse tiering & lineage
+    tier::Symbol = :raw                           # :raw (bronze), :processed (silver), :derived (gold)
+    producer::String = ""                         # Source project/org (e.g. "NOAA", "ParticleTracking.jl")
+    derived_from::Vector{Symbol} = Symbol[]       # Upstream dataset keys in catalog used to build this
+    checksum::String = ""                         # SHA-256 digest of stored artifact
     
     # Catalog management
     registered::DateTime = Dates.now()            # When this entry was added to catalog
@@ -99,50 +105,54 @@ end
 """
 mutable struct GeoDataCatalog
     # Storage
-    entries::Dict{UUID, DatasetEntry} = Dict{UUID, DatasetEntry}()
-    key_index::Dict{Symbol, UUID} = Dict{Symbol, UUID}()
-    name_index::Dict{String, Vector{UUID}} = Dict{String, Vector{UUID}}()
+    entries::Dict{UUID, DatasetEntry}
+    key_index::Dict{Symbol, UUID}
+    name_index::Dict{String, Vector{UUID}}
     
     # Configuration
-    catalog_file::String = ""                     # Path to persistent catalog storage
-    auto_save::Bool = true                        # Whether to automatically save to disk
-    readonly::Bool = false                        # Whether catalog is read-only
+    catalog_file::String                     # Path to persistent catalog storage
+    auto_save::Bool                          # Whether to automatically save to disk
+    readonly::Bool                           # Whether catalog is read-only
     
     # Statistics (cached)
-    stats::CatalogStats = CatalogStats()
-    stats_dirty::Bool = true                      # Whether stats need recalculation
+    stats::CatalogStats
+    stats_dirty::Bool                        # Whether stats need recalculation
     
     # Metadata
-    description::String = ""                      # Description of this catalog
-    version::String = "1.0"                       # Catalog schema version
-    created::DateTime = Dates.now()               # When catalog was created
-    updated::DateTime = Dates.now()               # When catalog was last modified
+    description::String                      # Description of this catalog
+    version::String                          # Catalog schema version
+    created::DateTime                        # When catalog was created
+    updated::DateTime                        # When catalog was last modified
+
+    function GeoDataCatalog(
+        catalog_file::String = "";
+        entries = Dict{UUID, DatasetEntry}(),
+        key_index = Dict{Symbol, UUID}(),
+        name_index = Dict{String, Vector{UUID}}(),
+        auto_save::Bool = true,
+        readonly::Bool = false,
+        stats::CatalogStats = CatalogStats(),
+        stats_dirty::Bool = true,
+        description::String = "",
+        version::String = "1.0",
+        created::DateTime = Dates.now(),
+        updated::DateTime = Dates.now()
+    )
+        cat = new(
+            entries, key_index, name_index,
+            catalog_file, auto_save, readonly,
+            stats, stats_dirty,
+            description, version, created, updated
+        )
+        if !isempty(catalog_file) && isfile(catalog_file)
+            load_catalog!(cat, catalog_file)
+        end
+        return cat
+    end
 end
 
-# ============================================================================
-# Catalog Construction and Persistence
-# ============================================================================
 
-"""
-    GeoDataCatalog(catalog_file::String=""; kwargs...)
 
-    Create a new dataset catalog, optionally loading from a file.
-"""
-function GeoDataCatalog(catalog_file::String=""; kwargs...)
-    catalog = GeoDataCatalog(catalog_file = catalog_file)
-    
-    # Apply keyword arguments
-    for (k, v) in kwargs
-        setfield!(catalog, k, v)
-    end
-    
-    # Load from file if specified and exists
-    if !isempty(catalog_file) && isfile(catalog_file)
-        load_catalog!(catalog, catalog_file)
-    end
-    
-    return catalog
-end
 
 """
     load_catalog!(catalog::GeoDataCatalog, file::String)
@@ -168,13 +178,13 @@ function load_catalog!(catalog::GeoDataCatalog, file::String)
         
         # Restore entries
         entries_data = get(data, "entries", Dict{String, Any}())
-        for (uuid_str, entry_data) in entries_data
-            uuid = UUIDs.UUID(uuid_str)
+        for (uuid_key, entry_data) in entries_data
+            uuid = UUIDs.UUID(string(uuid_key))
             entry = _deserialize_entry(entry_data)
             catalog.entries[uuid] = entry
             
             # Update basic indices
-            if !isempty(entry.key)
+            if entry.key !== Symbol("")
                 catalog.key_index[entry.key] = uuid
             end
             if !isempty(entry.name)
@@ -185,18 +195,6 @@ function load_catalog!(catalog::GeoDataCatalog, file::String)
             end
         end
         
-        # Initialize and populate indexes for efficient querying
-        catalog.temporal_index = IntervalTree{DateTime, UUID}()
-        catalog.spatial_index = RectTree{Float64, UUID}()
-        catalog.variable_index = InvertedIndex{String, UUID}()
-        for (uuid, entry) in catalog.entries
-            insert!(catalog.temporal_index, entry.temporal_coverage[1], entry.temporal_coverage[2], uuid)
-            insert!(catalog.spatial_index, entry.spatial_bounds[1], entry.spatial_bounds[3], entry.spatial_bounds[2], entry.spatial_bounds[4], uuid)
-            for variable in entry.variables
-                insert!(catalog.variable_index, variable, uuid)
-            end
-        end
-        
         # Rebuild statistics
         _update_stats!(catalog)
         
@@ -204,10 +202,12 @@ function load_catalog!(catalog::GeoDataCatalog, file::String)
         println("Loaded $(length(catalog.entries)) dataset entries from $file")
         
     catch e
-        throw(RuntimeError("Failed to load catalog from $file: $e"))
+        throw(ErrorException("Failed to load catalog from $file: $e"))
     end
     
     return catalog
+end
+
 function save_catalog(catalog::GeoDataCatalog, file::String="")
     target_file = isempty(file) ? catalog.catalog_file : file
     
@@ -238,13 +238,13 @@ function save_catalog(catalog::GeoDataCatalog, file::String="")
         
         # Write to file
         mkpath(dirname(target_file))  # Ensure directory exists
-        write(target_file, JSON3.write(data, 4))  # Pretty print with 4-space indent
+        write(target_file, JSON3.write(data))
         
         catalog.updated = Dates.now()
         println("Saved $(length(catalog.entries)) dataset entries to $target_file")
         
     catch e
-        throw(RuntimeError("Failed to save catalog to $target_file: $e"))
+        throw(ErrorException("Failed to save catalog to $target_file: $e"))
     end
     
     return nothing
@@ -272,6 +272,10 @@ function _serialize_entry(entry::DatasetEntry)::Dict{String, Any}
         "credits" => entry.credits,
         "license" => entry.license,
         "notes" => entry.notes,
+        "tier" => string(entry.tier),
+        "producer" => entry.producer,
+        "derived_from" => [string(s) for s in entry.derived_from],
+        "checksum" => entry.checksum,
         "registered" => string(entry.registered),
         "updated" => string(entry.updated),
         "version" => entry.version,
@@ -283,43 +287,68 @@ function _serialize_entry(entry::DatasetEntry)::Dict{String, Any}
     )
 end
 
-function _deserialize_entry(data::Dict{String, Any})::DatasetEntry
+function _deserialize_entry(data::Union{AbstractDict, JSON3.Object})::DatasetEntry
     # Handle dimensions specially
     dimensions_dict = Dict{String, Dimension}()
-    if haskey(data, "dimensions")
-        for (k, v) in data["dimensions"]
-            dimensions_dict[k] = _deserialize_dimension(v)
+    if haskey(data, "dimensions") || haskey(data, :dimensions)
+        dims_obj = get(data, "dimensions", get(data, :dimensions, nothing))
+        if dims_obj !== nothing
+            for (k, v) in pairs(dims_obj)
+                dimensions_dict[string(k)] = _deserialize_dimension(v)
+            end
         end
     end
     
+    derived_from_raw = get(data, "derived_from", get(data, :derived_from, Any[]))
+    derived_from_syms = Symbol[Symbol(s) for s in derived_from_raw]
+    
+    raw_uuid = get(data, "uuid", get(data, :uuid, ""))
+    uuid_val = isempty(string(raw_uuid)) ? UUIDs.uuid4() : UUIDs.UUID(string(raw_uuid))
+
+    raw_temporal = get(data, "temporal_coverage", get(data, :temporal_coverage, ["1970-01-01T00:00:00", "1970-01-01T00:00:00"]))
+    raw_spatial = get(data, "spatial_bounds", get(data, :spatial_bounds, [0.0, 0.0, 0.0, 0.0]))
+    raw_vertical = get(data, "vertical_range", get(data, :vertical_range, [0.0, 0.0]))
+
     return DatasetEntry(
-        uuid = UUIDs.UUID(get(data, "uuid", string(UUIDs.uuid4()))),
-        name = get(data, "name", ""),
-        key = Symbol(get(data, "key", "")),
-        variables = get(data, "variables", String[]),
+        uuid = uuid_val,
+        name = string(get(data, "name", get(data, :name, ""))),
+        key = Symbol(get(data, "key", get(data, :key, ""))),
+        variables = String[string(v) for v in get(data, "variables", get(data, :variables, String[]))],
         dimensions = dimensions_dict,
         temporal_coverage = (
-            Dates.DateTime(get(data, "temporal_coverage", ["1970-01-01T00:00:00", "1970-01-01T00:00:00"])[1]),
-            Dates.DateTime(get(data, "temporal_coverage", ["1970-01-01T00:00:00", "1970-01-01T00:00:00"])[2])
+            Dates.DateTime(string(raw_temporal[1])),
+            Dates.DateTime(string(raw_temporal[2]))
         ),
-        spatial_bounds = Tuple(get(data, "spatial_bounds", [0.0, 0.0, 0.0, 0.0])...),
-        vertical_range = Tuple(get(data, "vertical_range", [0.0, 0.0])...),
-        source = get(data, "source", ""),
-        location = get(data, "location", ""),
-        access_method = Symbol(get(data, "access_method", "file")),
-        format = Symbol(get(data, "format", "unknown")),
-        attributes = get(data, "attributes", Dict{String, Any}()),
-        credits = get(data, "credits", ""),
-        license = get(data, "license", ""),
-        notes = get(data, "notes", ""),
-        registered = Dates.DateTime(get(data, "registered", string(Dates.now()))),
-        updated = Dates.DateTime(get(data, "updated", string(Dates.now()))),
-        version = get(data, "version", "1.0"),
-        active = get(data, "active", true),
-        priority = get(data, "priority", 0),
-        access_count = get(data, "access_count", 0),
-        last_accessed = Dates.DateTime(get(data, "last_accessed", string(Dates.now()))),
-        total_download_size = get(data, "total_download_size", UInt64(0))
+        spatial_bounds = (
+            Float64(raw_spatial[1]),
+            Float64(raw_spatial[2]),
+            Float64(raw_spatial[3]),
+            Float64(raw_spatial[4])
+        ),
+        vertical_range = (
+            Float64(raw_vertical[1]),
+            Float64(raw_vertical[2])
+        ),
+        source = string(get(data, "source", get(data, :source, ""))),
+        location = string(get(data, "location", get(data, :location, ""))),
+        access_method = Symbol(get(data, "access_method", get(data, :access_method, "file"))),
+        format = Symbol(get(data, "format", get(data, :format, "unknown"))),
+        attributes = Dict{String, Any}(string(k) => v for (k, v) in pairs(get(data, "attributes", get(data, :attributes, Dict{String, Any}())))),
+        credits = string(get(data, "credits", get(data, :credits, ""))),
+        license = string(get(data, "license", get(data, :license, ""))),
+        notes = string(get(data, "notes", get(data, :notes, ""))),
+        tier = Symbol(get(data, "tier", get(data, :tier, "raw"))),
+        producer = string(get(data, "producer", get(data, :producer, ""))),
+        derived_from = derived_from_syms,
+        checksum = string(get(data, "checksum", get(data, :checksum, ""))),
+        registered = Dates.DateTime(string(get(data, "registered", get(data, :registered, string(Dates.now()))))),
+        updated = Dates.DateTime(string(get(data, "updated", get(data, :updated, string(Dates.now()))))),
+        version = string(get(data, "version", get(data, :version, "1.0"))),
+        active = Bool(get(data, "active", get(data, :active, true))),
+        priority = Int(get(data, "priority", get(data, :priority, 0))),
+        access_count = Int(get(data, "access_count", get(data, :access_count, 0))),
+        last_accessed = Dates.DateTime(string(get(data, "last_accessed", get(data, :last_accessed, string(Dates.now()))))),
+        total_download_size = UInt64(get(data, "total_download_size", get(data, :total_download_size, 0)))
     )
 end
 
@@ -336,7 +365,7 @@ function _serialize_dimension(dim::Dimension)::Dict{String, Any}
     )
 end
 
-function _deserialize_dimension(data::Dict{String, Any})::Dimension
+function _deserialize_dimension(data::Union{AbstractDict, JSON3.Object})::Dimension
     return Dimension(
         name = Symbol(get(data, "name", "")),
         size = get(data, "size", nothing),
@@ -420,7 +449,7 @@ function register_dataset!(catalog::GeoDataCatalog, entry::DatasetEntry)::UUID
     end
     
     # Check for conflicts with key index
-    if !isempty(entry.key) && haskey(catalog.key_index, entry.key)
+    if entry.key !== Symbol("") && haskey(catalog.key_index, entry.key)
         existing_uuid = catalog.key_index[entry.key]
         if haskey(catalog.entries, existing_uuid)
             existing_entry = catalog.entries[existing_uuid]
@@ -434,7 +463,7 @@ function register_dataset!(catalog::GeoDataCatalog, entry::DatasetEntry)::UUID
     catalog.entries[entry.uuid] = entry
     
     # Update basic indices
-    if !isempty(entry.key)
+    if entry.key !== Symbol("")
         catalog.key_index[entry.key] = entry.uuid
     end
     if !isempty(entry.name)
@@ -442,13 +471,6 @@ function register_dataset!(catalog::GeoDataCatalog, entry::DatasetEntry)::UUID
             catalog.name_index[entry.name] = UUID[]
         end
         push!(catalog.name_index[entry.name], entry.uuid)
-    end
-    
-    # Update indexes for efficient querying
-    insert!(catalog.temporal_index, entry.temporal_coverage[1], entry.temporal_coverage[2], entry.uuid)
-    insert!(catalog.spatial_index, entry.spatial_bounds[1], entry.spatial_bounds[3], entry.spatial_bounds[2], entry.spatial_bounds[4], entry.uuid)
-    for variable in entry.variables
-        insert!(catalog.variable_index, variable, entry.uuid)
     end
     
     # Update timestamps
@@ -477,7 +499,7 @@ function unregister_dataset!(catalog::GeoDataCatalog, uuid::UUID)::Bool
     entry = catalog.entries[uuid]
     
     # Remove from basic indices
-    if !isempty(entry.key) && haskey(catalog.key_index, entry.key) && catalog.key_index[entry.key] == uuid
+    if entry.key !== Symbol("") && haskey(catalog.key_index, entry.key) && catalog.key_index[entry.key] == uuid
         delete!(catalog.key_index, entry.key)
     end
     if !isempty(entry.name) && haskey(catalog.name_index, entry.name)
@@ -486,13 +508,6 @@ function unregister_dataset!(catalog::GeoDataCatalog, uuid::UUID)::Bool
         if isempty(idxs)
             delete!(catalog.name_index, entry.name)
         end
-    end
-    
-    # Remove from indexes for efficient querying
-    delete!(catalog.temporal_index, entry.temporal_coverage[1], entry.temporal_coverage[2], entry.uuid)
-    delete!(catalog.spatial_index, entry.spatial_bounds[1], entry.spatial_bounds[3], entry.spatial_bounds[2], entry.spatial_bounds[4], entry.uuid)
-    for variable in entry.variables
-        delete!(catalog.variable_index, variable, entry.uuid)
     end
     
     # Remove entry
@@ -569,7 +584,7 @@ function update_dataset!(catalog::GeoDataCatalog, uuid::UUID, updates::Pair{Symb
         # Apply updates has already been done above
        
         # Remove old values from basic indices
-        if !isempty(old_entry.key)
+        if old_entry.key !== Symbol("")
             delete!(catalog.key_index, old_entry.key)
         end
         if !isempty(old_entry.name)
@@ -580,15 +595,8 @@ function update_dataset!(catalog::GeoDataCatalog, uuid::UUID, updates::Pair{Symb
             end
         end
        
-        # Remove old values from indexes
-        delete!(catalog.temporal_index, old_entry.temporal_coverage[1], old_entry.temporal_coverage[2], entry.uuid)
-        delete!(catalog.spatial_index, old_entry.spatial_bounds[1], old_entry.spatial_bounds[3], old_entry.spatial_bounds[2], old_entry.spatial_bounds[4], entry.uuid)
-        for variable in old_entry.variables
-            delete!(catalog.variable_index, variable, entry.uuid)
-        end
-       
         # Add new values to basic indices
-        if !isempty(entry.key)
+        if entry.key !== Symbol("")
             catalog.key_index[entry.key] = entry.uuid
         end
         if !isempty(entry.name)
@@ -596,13 +604,6 @@ function update_dataset!(catalog::GeoDataCatalog, uuid::UUID, updates::Pair{Symb
                 catalog.name_index[entry.name] = UUID[]
             end
             push!(catalog.name_index[entry.name], entry.uuid)
-        end
-       
-        # Add new values to indexes
-        insert!(catalog.temporal_index, entry.temporal_coverage[1], entry.temporal_coverage[2], entry.uuid)
-        insert!(catalog.spatial_index, entry.spatial_bounds[1], entry.spatial_bounds[3], entry.spatial_bounds[2], entry.spatial_bounds[4], entry.uuid)
-        for variable in entry.variables
-            insert!(catalog.variable_index, variable, entry.uuid)
         end
     end
     
@@ -614,6 +615,7 @@ function update_dataset!(catalog::GeoDataCatalog, uuid::UUID, updates::Pair{Symb
     println("Updated dataset: $(entry.name) (UUID: $(uuid))")
     return entry
 end
+
 function get_dataset(catalog::GeoDataCatalog, uuid::UUID)::DatasetEntry
     if !haskey(catalog.entries, uuid)
         throw(ArgumentError("Dataset entry not found: $uuid"))
@@ -666,6 +668,9 @@ end
                   name::Union{Nothing, String} = nothing,
                   key::Union{Nothing, Symbol} = nothing,
                   variables::Union{Nothing, Vector{String}} = nothing,
+                  tier::Union{Nothing, Symbol} = nothing,
+                  producer::Union{Nothing, String} = nothing,
+                  derived_from::Union{Nothing, Symbol} = nothing,
                   temporal_range::Union{Nothing, Tuple{DateTime, DateTime}} = nothing,
                   spatial_bounds::Union{Nothing, Tuple{Float64, Float64, Float64, Float64}} = nothing,
                   vertical_range::Union{Nothing, Tuple{Float64, Float64}} = nothing,
@@ -681,6 +686,9 @@ function find_datasets(catalog::GeoDataCatalog;
                        name::Union{Nothing, String} = nothing,
                        key::Union{Nothing, Symbol} = nothing,
                        variables::Union{Nothing, Vector{String}} = nothing,
+                       tier::Union{Nothing, Symbol} = nothing,
+                       producer::Union{Nothing, String} = nothing,
+                       derived_from::Union{Nothing, Symbol} = nothing,
                        temporal_range::Union{Nothing, Tuple{DateTime, DateTime}} = nothing,
                        spatial_bounds::Union{Nothing, Tuple{Float64, Float64, Float64, Float64}} = nothing,
                        vertical_range::Union{Nothing, Tuple{Float64, Float64}} = nothing,
@@ -704,6 +712,21 @@ function find_datasets(catalog::GeoDataCatalog;
         
         # Check key
         if !(key === nothing) && entry.key != key
+            continue
+        end
+
+        # Check lakehouse tier
+        if !(tier === nothing) && entry.tier != tier
+            continue
+        end
+
+        # Check producer
+        if !(producer === nothing) && entry.producer != producer
+            continue
+        end
+
+        # Check upstream lineage (derived_from)
+        if !(derived_from === nothing) && !(derived_from in entry.derived_from)
             continue
         end
         
@@ -906,16 +929,94 @@ function export_catalog_to_csv(catalog::GeoDataCatalog, file::String)
 end
 
 # ============================================================================
+# Lakehouse Publishing and Fetching
+# ============================================================================
+
+"""
+    geopublish!(catalog::GeoDataCatalog, entry::DatasetEntry; save_now::Bool = true) -> UUID
+    geopublish!(catalog::GeoDataCatalog, location::String;
+                key::Symbol,
+                name::String,
+                tier::Symbol = :raw,
+                producer::String = "",
+                derived_from::Vector{Symbol} = Symbol[],
+                format::Symbol = :zarr,
+                variables::Vector{String} = String[],
+                spatial_bounds::Tuple{Float64, Float64, Float64, Float64} = (0.0, 0.0, 0.0, 0.0),
+                temporal_coverage::Tuple{DateTime, DateTime} = (DateTime(1970,1,1), DateTime(1970,1,1)),
+                notes::String = "",
+                save_now::Bool = true) -> UUID
+
+Publish and index a dataset into the GeoData lakehouse repository.
+"""
+function geopublish!(catalog::GeoDataCatalog, entry::DatasetEntry; save_now::Bool = true)::UUID
+    uuid = register_dataset!(catalog, entry)
+    if save_now && !catalog.auto_save && !isempty(catalog.catalog_file)
+        save_catalog(catalog)
+    end
+    return uuid
+end
+
+function geopublish!(catalog::GeoDataCatalog, location::String;
+                    key::Symbol,
+                    name::String,
+                    tier::Symbol = :raw,
+                    producer::String = "",
+                    derived_from::Vector{Symbol} = Symbol[],
+                    format::Symbol = :zarr,
+                    variables::Vector{String} = String[],
+                    spatial_bounds::Tuple{Float64, Float64, Float64, Float64} = (0.0, 0.0, 0.0, 0.0),
+                    temporal_coverage::Tuple{DateTime, DateTime} = (DateTime(1970,1,1), DateTime(1970,1,1)),
+                    notes::String = "",
+                    save_now::Bool = true)::UUID
+    entry = DatasetEntry(
+        key = key,
+        name = name,
+        tier = tier,
+        producer = producer,
+        derived_from = derived_from,
+        format = format,
+        location = location,
+        variables = variables,
+        spatial_bounds = spatial_bounds,
+        temporal_coverage = temporal_coverage,
+        notes = notes
+    )
+    return geopublish!(catalog, entry; save_now=save_now)
+end
+
+"""
+    geofetch(catalog::GeoDataCatalog, key::Symbol) -> DatasetEntry
+
+Fetch a registered dataset entry by key, recording the access count.
+"""
+function geofetch(catalog::GeoDataCatalog, key::Symbol)::DatasetEntry
+    entry = get_dataset_by_key(catalog, key)
+    access_dataset!(catalog, entry.uuid)
+    return entry
+end
+
+# ============================================================================
 # Convenience Functions and Default Catalog
 # ============================================================================
 
 """
+    lakehouse_root_dir() -> String
+
+Return root storage directory for GeoData lakehouse repository.
+Defaults to `~/.geodata`.
+"""
+function lakehouse_root_dir()
+    return get(ENV, "GEODATA_LAKEHOUSE_ROOT", joinpath(homedir(), ".geodata"))
+end
+
+"""
     default_catalog_path() -> String
 
-    Get the default path for the GeoData catalog file.
+Get the default path for the GeoData catalog file.
 """
 function default_catalog_path()
-    homedir() |> joinpath -> ".geodata" |> joinpath -> "catalog.json"
+    return joinpath(lakehouse_root_dir(), "catalog.json")
 end
 
 """
@@ -953,13 +1054,17 @@ export GeoDataCatalog,
        CatalogStats,
        
        # Construction and persistence
+       default_catalog_path,
+       lakehouse_root_dir,
        load_catalog!,
        save_catalog,
        
-       # Catalog modification
+       # Catalog modification & lakehouse publishing
        register_dataset!,
        unregister_dataset!,
        update_dataset!,
+       geopublish!,
+       geofetch,
        
        # Query and discovery
        get_dataset,
@@ -982,4 +1087,5 @@ export GeoDataCatalog,
        get_global_catalog,
        init_global_catalog!
 
-end # module GeoDataCatalog
+end # module CatalogModule
+

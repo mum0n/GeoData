@@ -18,7 +18,6 @@ using Base64
 using HTTP
 using Interpolations
 using Random
-using NumericalEarth
 
 """
     DataSource
@@ -52,7 +51,7 @@ struct DataSource
 end
 
 # Export the types and functions
-export DataSource, fetch_input, input_dir, file_digest, data_provenance, data_source, describe_data_sources
+export DATA_SOURCES, DataSource, fetch_input, input_dir, file_digest, data_provenance, data_source, describe_data_sources
 
 """
     fetch_input(key::Symbol, output_dir::AbstractString; force::Bool = false) -> String
@@ -832,74 +831,4 @@ end
 @inline _u32(b, i) = UInt32(b[i]) | (UInt32(b[i + 1]) << 8) | (UInt32(b[i + 2]) << 16) | (UInt32(b[i + 3]) << 24)
 @inline _u64(b, i) = foldl((v, k) -> v | (UInt64(b[i + k]) << (8 * k)), 0:7; init = UInt64(0))
 
-# Specialized coastline clipping function
-
-"""
-    fetch_natural_earth_coastline(output_path::AbstractString; verbose = false) -> String
-
-Clip the Natural Earth coastline GeoJSON to a bounding box defined by longitude and latitude ranges.
-"""
-function fetch_natural_earth_coastline(output_path::AbstractString; verbose::Bool = false)
-    using Downloads
-    using JSON3
-
-    url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/10m-coastline.json"
-    mkpath(dirname(output_path))
-
-    tmp = output_path * ".part"
-    try
-        Downloads.download(url, tmp)
-    catch err
-        rm(tmp; force = true)
-        error("Failed to download Natural Earth coastline: $err")
-    end
-
-    coastline_data = JSON3.read(read(tmp, String))
-
-    # Filter features within the bounding box
-    filtered_features = Dict{String, Any}(
-        "type" => "FeatureCollection",
-        "features" => filter(coastline_data.features) do feature
-            geometry = feature.geometry
-            coords = geometry.coordinates
-            
-            # Handle both Polygon and MultiPolygon geometries
-            if geometry.type == "Polygon"
-                # Check if any point in the polygon is within bounds
-                any(point -> 
-                    lon_range[1] <= point[1] <= lon_range[2] && 
-                    lat_range[1] <= point[2] <= lat_range[2], 
-                    coords[1]
-                )
-            elseif geometry.type == "MultiPolygon"
-                # Check if any point in any polygon is within bounds
-                any(polygon -> 
-                    any(point -> 
-                        lon_range[1] <= point[1] <= lon_range[2] && 
-                        lat_range[1] <= point[2] <= lat_range[2], 
-                    polygon[1]
-                ), coords)
-            else
-                false
-            end
-        end
-    )
-
-    # If no features found, return empty FeatureCollection
-    if isempty(filtered_features.features)
-        filtered_features = Dict{String, Any}(
-            "type" => "FeatureCollection",
-            "features" => Any[]
-        )
-    end
-
-    # Write filtered coastline to output
-    open(output_path, "w") do io
-        JSON3.print(io, filtered_features)
-    end
-
-    rm(tmp; force = true)
-    return output_path
-end
-
-end # module GeoDataManifest
+end # module GeoDataManifest

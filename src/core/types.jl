@@ -153,14 +153,16 @@ struct GeoDataset
 end
 
 # Convenience constructors
-function GeoDataset(; variables::Dict{String, GeoArray} = Dict{String, GeoArray}(),
-                     coords::Dict{Symbol, GeoArray} = Dict{Symbol, GeoArray}(),
+function GeoDataset(; variables::Dict = Dict{String, GeoArray}(),
+                     coords::Dict = Dict{Symbol, GeoArray}(),
                      dims::Dict{Symbol, Dimension} = Dict{Symbol, Dimension}(),
                      crs::CoordinateSystem = CoordinateSystem(),
                      attrs::Dict{String, Any} = Dict{String, Any}(),
                      backend::Any = nothing,
                      source::String = "")
-    GeoDataset(variables, coords, dims, crs, attrs, backend, source)
+    vars_typed = Dict{String, GeoArray}(string(k) => v for (k, v) in variables)
+    coords_typed = Dict{Symbol, GeoArray}(Symbol(k) => v for (k, v) in coords)
+    GeoDataset(vars_typed, coords_typed, dims, crs, attrs, backend, source)
 end
 
 Base.getproperty(ds::GeoDataset, name::Symbol) = begin

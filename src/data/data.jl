@@ -75,28 +75,6 @@ export
     # Geospatial utilities
     buffer_distance_to_degrees,
     expand_domain_with_buffer,
-    # Zarr storage utilities (general)
-    open_zarr_storage,
-    close_zarr_storage,
-    create_zarr_array,
-    write_zarr_array,
-    read_zarr_array,
-    zarr_create_group,
-    zarr_open_group,
-    zarr_append,
-    # Larval storage (specific to particle tracking)
-    open_larval_storage,
-    close_larval_storage,
-    initialize_larval_storage_schema!,
-    save_larval_simulation_run!,
-    list_larval_simulation_runs,
-    load_larval_trajectories,
-    load_larval_recruitment_metrics,
-    load_larval_connectivity,
-    load_larval_gridded_dispersal,
-    load_larval_hydrodynamic_fields,
-    compare_larval_scenarios,
-    compute_larval_ensemble_model_average,
     # Copernicus Marine and CDS
     copernicusmarine_executable,
     project_python,
@@ -112,15 +90,13 @@ include("winds.jl")
 include("woa23.jl")
 include("boundary.jl")
 include("regrid_utils.jl")
-include("zarr_storage.jl")
-include("larval_storage.jl")
 include("manifest.jl")
 include("copernicus.jl")
-using .LarvalStorage
-using .ZarrStorage
 using .GeoDataManifest
 using .Copernicus
+
 # Re-export GeoDataManifest exports
-export DataSource, fetch_input, input_dir, file_digest, data_provenance, data_source, describe_data_sources
+export DATA_SOURCES, DataSource, fetch_input, input_dir, file_digest, data_provenance, data_source, describe_data_sources
+
 
 end # module Data

@@ -1,8 +1,10 @@
-"""
-YAXArrays backend for lazy, labeled array operations.
-"""
+const _has_yaxarrays = try
+    import YAXArrays
+    true
+catch
+    false
+end
 
-using YAXArrays
 using DimensionalData
 
 """
@@ -17,6 +19,7 @@ function backend_capabilities(backend::YAXArraysBackend)
 end
 
 function backend_open(backend::YAXArraysBackend, uri::String; mode::String="r", kwargs...)
+    _has_yaxarrays || error("YAXArrays.jl is required for YAXArraysBackend. Add YAXArrays to your environment.")
     mode == "r" || error("YAXArrays backend only supports read mode")
     path = _yax_uri_to_path(uri)
     
@@ -54,6 +57,7 @@ end
 function backend_create(backend::YAXArraysBackend, uri::String; dims::Dict{Symbol, Dimension},
                        variables::Dict{String, <:AbstractArray}, coords::Dict{Symbol, <:AbstractArray},
                        crs::CoordinateSystem, attrs::Dict{String, Any}, kwargs...)
+    _has_yaxarrays || error("YAXArrays.jl is required for YAXArraysBackend. Add YAXArrays to your environment.")
     path = _yax_uri_to_path(uri)
     
     # Build YAXArrays cube

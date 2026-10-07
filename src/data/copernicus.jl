@@ -6,11 +6,20 @@ Copernicus Marine and Climate Data Store integration for geospatial data retriev
 This module provides functions to fetch data from Copernicus Marine Service (CMEMS)
 and Copernicus Climate Data Store (CDS) using their respective CLI tools.
 """
+module Copernicus
 
 using Downloads
 using NCDatasets
 using Base64
 using JSON3
+
+export copernicusmarine_executable,
+       project_python,
+       copernicus_credentials,
+       copernicus_login_reminder,
+       fetch_copernicus_physics_subset,
+       fetch_copernicus_hydrography_with_fallback,
+       fetch_copernicus_surface_winds
 
 """
     copernicusmarine_executable() -> String

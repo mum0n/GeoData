@@ -56,11 +56,12 @@ function fetch_boundary_hydrography_geodata(source::Symbol;
         if !isfile(p)
             verbose && println("Fetching GLORYS12V1 boundary subset (Copernicus Marine)...")
             # This would need the copernicus fetch to be adapted to GeoData
-            # For now, fall back to existing implementation
-            fetch_copernicus_physics_subset(lon_range = lon_range, lat_range = lat_range,
-                                            start_date = "1993-01-01", end_date = "1993-12-31",
-                                            output_path = replace(p, ".zarr" => ".nc"),
-                                            dataset_id = "cmems_mod_glo_phy_my_0.083deg_P1M-m")
+            Copernicus.fetch_copernicus_physics_subset(
+                lon_range = lon_range, lat_range = lat_range,
+                start_date = "1993-01-01", end_date = "1993-12-31",
+                output_path = replace(p, ".zarr" => ".nc"),
+                dataset_id = "cmems_mod_glo_phy_my_0.083deg_P1M-m"
+            )
             # Convert to zarr
             ds = geoload(replace(p, ".zarr" => ".nc"); backend=:ncdatasets)
             geosave(p, ds; backend=:zarr)
@@ -73,15 +74,14 @@ function fetch_boundary_hydrography_geodata(source::Symbol;
     if source === :hycom
         p = joinpath(input_dir, "boundary_hycom.zarr")
         if !isfile(p)
-            verbose && println("Fetching HYCOM boundary state (keyless OPeNDAP)...")
-            # For HYCOM, fall back to existing implementation
-            fetch_hycom_boundary(lon_range = lon_range, lat_range = lat_range, 
-                                 output_path = replace(p, ".zarr" => ".nc"))
-            ds = geoload(replace(p, ".zarr" => ".nc"); backend=:ncdatasets)
-            geosave(p, ds; backend=:zarr)
+            error(
+                "HYCOM GOFS OPeNDAP server (tds.hycom.org) is currently unreachable or returns " *
+                "HTTP 400. Use source = :woa23 or source = :glorys12v1 instead, or place a " *
+                "pre-downloaded 'boundary_hycom.zarr' in '$(input_dir)'."
+            )
         end
         return build_boundary_tracer_interpolators_geodata(p, p; T_name = "water_temp",
-                                                            S_name = "salinity", month = 1)
+                                                            S_name = "salinity", months = [1])
     end
 
     error(

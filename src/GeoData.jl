@@ -95,11 +95,15 @@ include("api/regrid.jl")
 include("data/data.jl")
 using .Data
 # Import manifest functions for re-export
-import .Data: DataSource, fetch_input, input_dir, file_digest, data_provenance, data_source, describe_data_sources
+import .Data: DATA_SOURCES, DataSource, fetch_input, input_dir, file_digest, data_provenance, data_source, describe_data_sources
 
-# Data catalog
+# Data catalog and lakehouse
 include("data/catalog.jl")
-using .GeoDataCatalog
+using .CatalogModule
+
+include("data/lakehouse.jl")
+using .LakehouseModule
+
 
 # Register default backends
 function _register_default_backends()
@@ -141,7 +145,7 @@ export
     # Utilities
     infer_backend,
     open_dataset,
-    close_dataset
+    close_dataset,
     # Data functions (from Data module)
     # Coastline
     fetch_natural_earth_coastline,
@@ -181,43 +185,41 @@ export
     # Geospatial utilities
     buffer_distance_to_degrees,
     expand_domain_with_buffer,
-    # Storage (Zarr-based, replaces DuckDB)
-    open_larval_storage,
-    close_larval_storage,
-    initialize_larval_storage_schema!,
-    save_larval_simulation_run!,
-    list_larval_simulation_runs,
-    load_larval_trajectories,
-    load_larval_recruitment_metrics,
-    load_larval_connectivity,
-    load_larval_gridded_dispersal,
-    load_larval_hydrodynamic_fields,
-    compare_larval_scenarios,
-    compute_larval_ensemble_model_average,
-    # Zarr storage utilities (general)
-    open_zarr_storage,
-    close_zarr_storage,
-    create_zarr_array,
-    write_zarr_array,
-    read_zarr_array,
-    zarr_create_group,
-    zarr_open_group,
-    zarr_append,
-     # Manifest (provenance registry)
-     DataSource,
-     fetch_input,
-     input_dir,
-     file_digest,
-     data_provenance
-     # Data catalog
+    # Copernicus Marine & Climate (GLORYS / ERA5)
+    copernicusmarine_executable,
+    project_python,
+    copernicus_credentials,
+    copernicus_login_reminder,
+    fetch_copernicus_physics_subset,
+    fetch_copernicus_hydrography_with_fallback,
+    fetch_copernicus_surface_winds,
+    # Manifest (provenance registry)
+    DATA_SOURCES,
+    DataSource,
+    data_source,
+    describe_data_sources,
+    fetch_input,
+    input_dir,
+    file_digest,
+    data_provenance,
+     # Data catalog and lakehouse
      GeoDataCatalog,
      DatasetEntry,
      CatalogStats,
+     default_catalog_path,
+     lakehouse_root_dir,
+     lakehouse_path,
+     lakehouse_tiers,
+     compute_lakehouse_checksum,
+     geopublish_dataset!,
+     geofetch_dataset,
      load_catalog!,
      save_catalog,
      register_dataset!,
      unregister_dataset!,
      update_dataset!,
+     geopublish!,
+     geofetch,
      get_dataset,
      get_dataset_by_key,
      get_datasets_by_name,
@@ -231,6 +233,6 @@ export
      init_global_catalog!
 
 # Convenience re-exports from dependencies
-@reexport using Zarr, YAXArrays, GeoParquet, NCDatasets
+@reexport using Zarr, GeoParquet, NCDatasets
 
 end # module GeoData
