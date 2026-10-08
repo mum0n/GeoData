@@ -233,6 +233,6 @@ export
      init_global_catalog!
 
 # Convenience re-exports from dependencies
-@reexport using Zarr, GeoParquet, NCDatasets
+@reexport using Zarr, GeoParquet, NCDatasets, GeoInterface
 
 end # module GeoData

@@ -84,16 +84,18 @@ dim_names = _zarr_infer_dim_names_from_size(size(data), dims)
     end
     
     return GeoDataset(
-        Dict(k => GeoArray(v, _zarr_dims_to_tuple(k, v, dims, coords), crs, Dict()) for (k, v) in variables),
-        Dict(k => GeoArray(v, (dims[k],), crs, Dict()) for (k, v) in coords),
+        Dict(k => GeoArray(v, _zarr_dims_to_tuple(k, v, dims, coords), crs, Dict{String, Any}()) for (k, v) in variables),
+        Dict(k => GeoArray(v, (dims[k],), crs, Dict{String, Any}()) for (k, v) in coords),
         dims, crs, attrs, backend, uri
     )
 end
 
-function backend_write(backend::ZarrBackend, dataset::GeoDataset; variables::Dict{String, <:AbstractArray}=Dict(),
+function backend_write(backend::ZarrBackend, dataset::GeoDataset; uri::Union{String, Nothing}=nothing,
+                      variables::Dict{String, <:AbstractArray}=Dict(),
                       coords::Dict{Symbol, <:AbstractArray}=Dict(), attrs::Dict{String, Any}=Dict(),
                       mode::String="update", kwargs...)
-    path = _zarr_uri_to_path(dataset.source)
+    target = uri !== nothing ? uri : dataset.source
+    path = _zarr_uri_to_path(target)
     g = zopen(path; mode="r+")
     
     for (name, data) in variables

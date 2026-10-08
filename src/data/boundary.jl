@@ -53,7 +53,7 @@ function fetch_boundary_hydrography_geodata(source::Symbol;
 
     if source in (:glorys12v1, :glorys_climatology)
         p = joinpath(input_dir, "boundary_glorys_1993_$(lon[1])_$(lon[2])_$(lat[1])_$(lat[2]).zarr")
-        if !isfile(p)
+        if !isdir(p) && !isfile(p)
             verbose && println("Fetching GLORYS12V1 boundary subset (Copernicus Marine)...")
             # This would need the copernicus fetch to be adapted to GeoData
             Copernicus.fetch_copernicus_physics_subset(
@@ -73,7 +73,7 @@ function fetch_boundary_hydrography_geodata(source::Symbol;
 
     if source === :hycom
         p = joinpath(input_dir, "boundary_hycom.zarr")
-        if !isfile(p)
+        if !isdir(p) && !isfile(p)
             error(
                 "HYCOM GOFS OPeNDAP server (tds.hycom.org) is currently unreachable or returns " *
                 "HTTP 400. Use source = :woa23 or source = :glorys12v1 instead, or place a " *
@@ -163,10 +163,10 @@ function build_boundary_tracer_interpolators_geodata(
     itp_S = interpolate((lons, lats, deps), S_data, Gridded(Linear()))
     itp_S_ext = extrapolate(itp_S, Flat())
 
-    # Return callable functions (lon, lat, z, t) -> value
+    # Return callable functions supporting both (lon, lat, z) and (lon, lat, z, t) -> value
     # Time dimension is handled by the sponge relaxation, not interpolation
-    T_fn = (lon, lat, z, t) -> Float64(itp_T_ext(Float64(lon), Float64(lat), Float64(z)))
-    S_fn = (lon, lat, z, t) -> Float64(itp_S_ext(Float64(lon), Float64(lat), Float64(z)))
+    T_fn = (lon, lat, z, t=0.0) -> Float64(itp_T_ext(Float64(lon), Float64(lat), Float64(z)))
+    S_fn = (lon, lat, z, t=0.0) -> Float64(itp_S_ext(Float64(lon), Float64(lat), Float64(z)))
 
     return (T = T_fn, S = S_fn)
 end

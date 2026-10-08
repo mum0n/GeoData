@@ -47,7 +47,7 @@ function _save_with_backend(be::GeoBackend, uri::String, data::GeoDataset; kwarg
     
     if isfile(path) || isdir(path)
         # Update existing
-        backend_write(be, data; variables=vars, coords=coords, attrs=attrs, mode="update", kwargs...)
+        backend_write(be, data; uri=path, variables=vars, coords=coords, attrs=attrs, mode="update", kwargs...)
     else
         # Create new
         backend_create(be, path; dims=dims, variables=vars, coords=coords, crs=crs, attrs=attrs, kwargs...)

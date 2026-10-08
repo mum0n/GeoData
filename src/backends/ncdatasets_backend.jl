@@ -4,6 +4,7 @@ NCDatasets backend for NetCDF files (classic and Zarr).
 
 using NCDatasets
 using CFTime
+using Dates
 
 """
     NCDatasetsBackend
@@ -54,7 +55,16 @@ function backend_open(backend::NCDatasetsBackend, uri::String; mode::String="r",
             canon = standardize_dimension_name(Symbol(name))
             canon in coord_names && continue
             
-            data = reshape(Array{Float64}(v[:]), size(v)...)
+            raw_vals = v[:]
+            data = if eltype(raw_vals) >: Missing
+                arr = Array{Float64}(undef, size(v)...)
+                for (idx, val) in enumerate(raw_vals)
+                    arr[idx] = ismissing(val) ? NaN : Float64(val)
+                end
+                arr
+            else
+                reshape(Array{Float64}(raw_vals), size(v)...)
+            end
             dn = String.(dimnames(v))
             dim_objs = [_nc_dim_from_var(dn[i], ds, dims, coords) for i in 1:length(dn)]
             vars[name] = GeoArray(data, tuple(dim_objs...), CoordinateSystem(), Dict{String, Any}(v.attrib))
@@ -102,10 +112,12 @@ dim_names = _ncdatasets_infer_dim_names_from_size(size(data), dims)
     )
 end
 
-function backend_write(backend::NCDatasetsBackend, dataset::GeoDataset; variables::Dict{String, <:AbstractArray}=Dict(),
+function backend_write(backend::NCDatasetsBackend, dataset::GeoDataset; uri::Union{String, Nothing}=nothing,
+                      variables::Dict{String, <:AbstractArray}=Dict(),
                       coords::Dict{Symbol, <:AbstractArray}=Dict(), attrs::Dict{String, Any}=Dict(),
                       mode::String="update", kwargs...)
-    path = _ncdatasets_uri_to_path(dataset.source)
+    target = uri !== nothing ? uri : dataset.source
+    path = _ncdatasets_uri_to_path(target)
     NCDataset(path, "r+") do ds
         for (name, data) in variables
             if haskey(ds, name)
@@ -147,22 +159,34 @@ function _infer_format(uri::String, default::String)
 end
 
 function _read_coord(v)
-    data = collect(Float64, v[:])
-    if haskey(v.attrib, "units")
+    raw = v[:]
+    if eltype(raw) <: Dates.AbstractTime || eltype(raw) <: CFTime.AbstractCFDateTime ||
+       (!isempty(raw) && (first(raw) isa Dates.AbstractTime || first(raw) isa CFTime.AbstractCFDateTime))
+        return Float64[Dates.datetime2unix(DateTime(Dates.year(t), Dates.month(t), Dates.day(t),
+                                                    Dates.hour(t), Dates.minute(t), Dates.second(t))) for t in raw]
+    elseif haskey(v.attrib, "units") && occursin("since", v.attrib["units"])
         units = v.attrib["units"]
-        if occursin("since", units)  # time coordinate
-            try
-                epoch, calendar = parse_time_units(units)
-                data = [datetime_to_time(DateTime(t), units) for t in CFTime.num2date(data, units)]
-            catch
-            end
+        try
+            epoch, calendar = parse_time_units(units)
+            data = Float64.(raw)
+            return [datetime_to_time(DateTime(t), units) for t in CFTime.num2date(data, units)]
+        catch
+            return Float64.(raw)
         end
+    else
+        return collect(Float64, raw)
     end
-    return data
 end
 
 function _nc_dim_from_var(dim_name, ds, dims, coords)
-    if haskey(dims, Symbol(dim_name))
+    canon = standardize_dimension_name(Symbol(dim_name))
+    if haskey(dims, canon)
+        d = dims[canon]
+        coords_arr = get(coords, canon, nothing)
+        coords_vec = coords_arr isa GeoArray ? coords_arr.data : coords_arr
+        return Dimension(name=canon, size=d.size, coords=coords_vec, units=d.units,
+                         standard_name=d.standard_name, calendar=d.calendar)
+    elseif haskey(dims, Symbol(dim_name))
         d = dims[Symbol(dim_name)]
         coords_arr = get(coords, Symbol(dim_name), nothing)
         coords_vec = coords_arr isa GeoArray ? coords_arr.data : coords_arr
@@ -170,9 +194,17 @@ function _nc_dim_from_var(dim_name, ds, dims, coords)
                          standard_name=d.standard_name, calendar=d.calendar)
     end
     # Fallback
-    v = ds[dim_name]
-    return Dimension(name=Symbol(dim_name), size=length(v), coords=collect(Float64, v[:]),
-                     units=get(v.attrib, "units", ""))
+    if haskey(ds, dim_name)
+        v = ds[dim_name]
+        data = _read_coord(v)
+        return Dimension(name=canon, size=length(data), coords=data,
+                         units=get(v.attrib, "units", ""),
+                         standard_name=string(canon),
+                         calendar=get(v.attrib, "calendar", nothing))
+    else
+        dim_len = ds.dim[dim_name]
+        return Dimension(name=canon, size=dim_len, coords=collect(Float64, 1:dim_len))
+    end
 end
 
 function _ncdatasets_infer_dim_names_from_size(shape, dims)

@@ -163,6 +163,33 @@ function load_coastline_polygons_geodata(filepath::AbstractString = "inputs/coas
 end
 
 """
+    point_in_polygon(x::Real, y::Real, poly_lons::AbstractVector, poly_lats::AbstractVector) -> Bool
+
+Determine whether 2D coordinates (x, y) fall within a polygon defined by vertex vectors
+(poly_lons, poly_lats) using the standard Jordan curve theorem (ray-casting algorithm).
+"""
+function point_in_polygon(x::Real, y::Real, poly_lons::AbstractVector, poly_lats::AbstractVector)::Bool
+    n = min(length(poly_lons), length(poly_lats))
+    n < 3 && return false
+    inside = false
+    j = n
+    px = Float64(x)
+    py = Float64(y)
+    @inbounds for i in 1:n
+        xi = Float64(poly_lons[i])
+        yi = Float64(poly_lats[i])
+        xj = Float64(poly_lons[j])
+        yj = Float64(poly_lats[j])
+
+        if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)
+            inside = !inside
+        end
+        j = i
+    end
+    return inside
+end
+
+"""
     is_point_on_land_geodata(lon, lat; coastline, coastline_file=nothing) -> Bool
 
 Check if a point is on land using coastline polygons from GeoData.

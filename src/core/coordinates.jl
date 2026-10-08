@@ -19,8 +19,18 @@ using Dates
 Map dimension name variants to canonical names using optional mapping.
 Defaults to identity (no standardization).
 """
+const DEFAULT_DIMENSION_MAPPINGS = Dict{Symbol, Symbol}(
+    :lon => :lon, :longitude => :lon, :x => :lon, :nav_lon => :lon,
+    :lat => :lat, :latitude => :lat, :y => :lat, :nav_lat => :lat,
+    :depth => :depth, :lev => :depth, :level => :depth, :z => :depth, :elevation => :depth,
+    :time => :time, :t => :time, :date => :time, :datetime => :time
+)
+
 function standardize_dimension_name(name::Symbol; mapping::Dict{Symbol,Symbol}=Dict{Symbol,Symbol}())
-    get(mapping, name, name)
+    if !isempty(mapping) && haskey(mapping, name)
+        return mapping[name]
+    end
+    return get(DEFAULT_DIMENSION_MAPPINGS, name, name)
 end
 
 """
