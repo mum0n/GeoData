@@ -181,6 +181,8 @@ using GeoData: ZarrBackend, NCDatasetsBackend, YAXArraysBackend, GeoParquetBacke
             @test grid_spacing(coords) ≈ 0.5
         end
 
+        include("cube_test.jl")
+
     finally
         # Target test clean up with retry for Windows file handles
         GC.gc()

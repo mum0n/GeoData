@@ -92,11 +92,19 @@ include("boundary.jl")
 include("regrid_utils.jl")
 include("manifest.jl")
 include("copernicus.jl")
+include("regional_cube.jl")
 using .GeoDataManifest
 using .Copernicus
 
 # Re-export GeoDataManifest exports
 export DATA_SOURCES, DataSource, fetch_input, input_dir, file_digest, data_provenance, data_source, describe_data_sources
 
+# Re-export regional cube ingestion symbols
+export RegionalCubeConfig,
+       load_cube_config,
+       standard_ocean_depths,
+       assimilate_regional_cube,
+       build_cube_hsi_evaluator,
+       evaluate_bioenergetic_scope
 
 end # module Data

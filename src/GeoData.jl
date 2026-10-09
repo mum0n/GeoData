@@ -90,6 +90,7 @@ include("api/values.jl")
 include("api/join.jl")
 include("api/index.jl")
 include("api/regrid.jl")
+include("api/storage.jl")
 
 # Data modules
 include("data/data.jl")
@@ -146,6 +147,14 @@ export
     infer_backend,
     open_dataset,
     close_dataset,
+    # Storage abstraction
+    GeoStorage,
+    open_geostorage,
+    close_geostorage,
+    create_storage_group,
+    has_storage_group,
+    write_storage_variable!,
+    read_storage_variable,
     # Data functions (from Data module)
     # Coastline
     fetch_natural_earth_coastline,
@@ -230,7 +239,14 @@ export
      get_stats,
      export_catalog_to_csv,
      get_global_catalog,
-     init_global_catalog!
+     init_global_catalog!,
+     # Regional data cube assimilation
+     RegionalCubeConfig,
+     load_cube_config,
+     standard_ocean_depths,
+     assimilate_regional_cube,
+     build_cube_hsi_evaluator,
+     evaluate_bioenergetic_scope
 
 # Convenience re-exports from dependencies
 @reexport using Zarr, GeoParquet, NCDatasets, GeoInterface

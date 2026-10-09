@@ -17,11 +17,7 @@ end
 
 function backend_open(backend::ZarrBackend, uri::String; mode::String="r", kwargs...)
     path = _zarr_uri_to_path(uri)
-    if mode == "r"
-        g = zopen(path; kwargs...)
-    else
-        g = zopen(path; mode=mode, kwargs...)
-    end
+    g = zopen(path, mode; kwargs...)
     
     vars = Dict{String, GeoArray}()
     coords = Dict{Symbol, GeoArray}()
@@ -96,7 +92,7 @@ function backend_write(backend::ZarrBackend, dataset::GeoDataset; uri::Union{Str
                       mode::String="update", kwargs...)
     target = uri !== nothing ? uri : dataset.source
     path = _zarr_uri_to_path(target)
-    g = zopen(path; mode="r+")
+    g = zopen(path, "r+"; kwargs...)
     
     for (name, data) in variables
         if haskey(g, name)

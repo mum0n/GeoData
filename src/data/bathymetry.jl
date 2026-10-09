@@ -56,6 +56,15 @@ function fetch_erddap_bathymetry(;
     verbose::Bool = true
 )
     mkpath(dirname(output_path))
+    if (isdir(output_path) || isfile(output_path))
+        try
+            verbose && println("Loading cached bathymetry from $(output_path)...")
+            return load_bathymetry_geodata(output_path; backend=backend)
+        catch cache_err
+            verbose && @warn "Failed to load cached bathymetry at $(output_path): $(cache_err). Re-fetching from ERDDAP."
+        end
+    end
+
     min_lat, max_lat = Float64(lat_range[1]), Float64(lat_range[2])
     min_lon, max_lon = Float64(lon_range[1]), Float64(lon_range[2])
 
@@ -88,20 +97,29 @@ function fetch_erddap_bathymetry(;
 end
 
 """
-    load_bathymetry_geodata(filepath::AbstractString; backend=:zarr) -> GeoDataset
+    load_bathymetry_geodata(filepath::AbstractString; backend=nothing) -> GeoDataset
 
-Load bathymetry from a GeoData-compatible file (Zarr, NetCDF, etc.)
+Load bathymetry from a GeoData-compatible file (Zarr, NetCDF, GeoParquet, etc.),
+auto-detecting the backend from the file extension when not specified.
 """
-function load_bathymetry_geodata(filepath::AbstractString; backend::Symbol = :zarr)
+function load_bathymetry_geodata(
+    filepath::AbstractString;
+    backend = nothing
+)
     return geoload(filepath; backend=backend)
 end
 
 """
-    save_bathymetry_geodata(ds::GeoDataset, filepath::AbstractString; backend=:zarr) -> String
+    save_bathymetry_geodata(ds::GeoDataset, filepath::AbstractString; backend=nothing) -> String
 
-Save bathymetry GeoDataset to a file.
+Save bathymetry GeoDataset to a file, auto-detecting the backend from file extension when
+not specified.
 """
-function save_bathymetry_geodata(ds::GeoDataset, filepath::AbstractString; backend::Symbol = :zarr)
+function save_bathymetry_geodata(
+    ds::GeoDataset,
+    filepath::AbstractString;
+    backend = nothing
+)
     mkpath(dirname(filepath))
     geosave(filepath, ds; backend=backend)
     return filepath
@@ -115,8 +133,12 @@ Create a continuous (lon, lat) -> elevation interpolator from a bathymetry GeoDa
 function get_bathymetry_interpolator(ds::GeoDataset; varname::AbstractString = "elevation")
     # Find the elevation variable
     elev_var = haskey(ds.variables, varname) ? varname :
-               findfirst(k -> k in ("elevation", "altitude", "z", "topo", "bedrock_altitude"), keys(ds.variables))
-    isnothing(elev_var) && error("No elevation variable found in dataset. Available: $(keys(ds.variables))")
+               begin
+                   vkeys = collect(keys(ds.variables))
+                   idx = findfirst(k -> k in ("elevation", "altitude", "z", "topo", "bedrock_altitude"), vkeys)
+                   isnothing(idx) ? nothing : vkeys[idx]
+               end
+    isnothing(elev_var) && error("No elevation variable found in dataset. Available: $(collect(keys(ds.variables)))")
     
     elev_ga = ds.variables[elev_var]
     lons = haskey(ds.coords, :lon) ? vec(ds.coords[:lon].data) :
@@ -377,9 +399,56 @@ function extract_marine_cells(
         bathymetry
     end
 
-    lons = Float64.(bathy_data.lon)
-    lats = Float64.(bathy_data.lat)
-    elev = Float64.(bathy_data.elevation)
+    lons = if bathy_data isa GeoDataset
+        haskey(bathy_data.coords, :lon) ? Float64.(vec(bathy_data.coords[:lon].data)) :
+        haskey(bathy_data.coords, :longitude) ? Float64.(vec(bathy_data.coords[:longitude].data)) :
+        Float64.(vec(bathy_data.lon))
+    elseif hasproperty(bathy_data, :lon)
+        Float64.(vec(bathy_data.lon))
+    elseif hasproperty(bathy_data, :longitude)
+        Float64.(vec(bathy_data.longitude))
+    else
+        error("No longitude coordinate found in bathymetry dataset")
+    end
+
+    lats = if bathy_data isa GeoDataset
+        haskey(bathy_data.coords, :lat) ? Float64.(vec(bathy_data.coords[:lat].data)) :
+        haskey(bathy_data.coords, :latitude) ? Float64.(vec(bathy_data.coords[:latitude].data)) :
+        Float64.(vec(bathy_data.lat))
+    elseif hasproperty(bathy_data, :lat)
+        Float64.(vec(bathy_data.lat))
+    elseif hasproperty(bathy_data, :latitude)
+        Float64.(vec(bathy_data.latitude))
+    else
+        error("No latitude coordinate found in bathymetry dataset")
+    end
+
+    elev_raw = if bathy_data isa GeoDataset
+        e_key = haskey(bathy_data.variables, "elevation") ? "elevation" :
+                begin
+                    vkeys = collect(keys(bathy_data.variables))
+                    idx = findfirst(k -> k in ("elevation", "altitude", "z", "topo", "bedrock_altitude"), vkeys)
+                    isnothing(idx) ? nothing : vkeys[idx]
+                end
+        isnothing(e_key) && error("No elevation variable found in dataset. Available: $(collect(keys(bathy_data.variables)))")
+        Float64.(bathy_data.variables[e_key].data)
+    elseif hasproperty(bathy_data, :elevation)
+        Float64.(bathy_data.elevation)
+    elseif hasproperty(bathy_data, :z)
+        Float64.(bathy_data.z)
+    elseif hasproperty(bathy_data, :altitude)
+        Float64.(bathy_data.altitude)
+    elseif hasproperty(bathy_data, :topo)
+        Float64.(bathy_data.topo)
+    else
+        error("No elevation variable found in bathymetry dataset")
+    end
+
+    elev = if size(elev_raw) == (length(lats), length(lons))
+        permutedims(elev_raw, (2, 1))
+    else
+        elev_raw
+    end
 
     h_threshold = -max(0.0, Float64(min_seabed_depth))
 
@@ -485,8 +554,30 @@ function sample_marine_coordinates(
         bathymetry
     end
 
-    lons_raw = Float64.(bathy_data.lon)
-    lats_raw = Float64.(bathy_data.lat)
+    lons_raw = if bathy_data isa GeoDataset
+        haskey(bathy_data.coords, :lon) ? Float64.(vec(bathy_data.coords[:lon].data)) :
+        haskey(bathy_data.coords, :longitude) ? Float64.(vec(bathy_data.coords[:longitude].data)) :
+        Float64.(vec(bathy_data.lon))
+    elseif hasproperty(bathy_data, :lon)
+        Float64.(vec(bathy_data.lon))
+    elseif hasproperty(bathy_data, :longitude)
+        Float64.(vec(bathy_data.longitude))
+    else
+        error("No longitude coordinate found in bathymetry dataset")
+    end
+
+    lats_raw = if bathy_data isa GeoDataset
+        haskey(bathy_data.coords, :lat) ? Float64.(vec(bathy_data.coords[:lat].data)) :
+        haskey(bathy_data.coords, :latitude) ? Float64.(vec(bathy_data.coords[:latitude].data)) :
+        Float64.(vec(bathy_data.lat))
+    elseif hasproperty(bathy_data, :lat)
+        Float64.(vec(bathy_data.lat))
+    elseif hasproperty(bathy_data, :latitude)
+        Float64.(vec(bathy_data.latitude))
+    else
+        error("No latitude coordinate found in bathymetry dataset")
+    end
+
     dlon = length(lons_raw) > 1 ? abs(lons_raw[2] - lons_raw[1]) : 0.05
     dlat = length(lats_raw) > 1 ? abs(lats_raw[2] - lats_raw[1]) : 0.05
 

@@ -138,6 +138,9 @@ Load coastline polygons from GeoParquet file.
 Returns vector of NamedTuples with (name, code, lons, lats).
 """
 function load_coastline_polygons_geodata(filepath::AbstractString = "inputs/coastline.parquet")
+    if !isfile(filepath)
+        return NamedTuple[]
+    end
     if endswith(filepath, ".parquet")
         ds = geoload(filepath; backend=:geoparquet)
         polys = NamedTuple[]
@@ -158,7 +161,7 @@ function load_coastline_polygons_geodata(filepath::AbstractString = "inputs/coas
         return polys
     else
         # Fall back to legacy .dat format
-        return load_coastline_polygons(filepath)
+        return isfile(filepath) ? load_coastline_polygons(filepath) : NamedTuple[]
     end
 end
 
@@ -202,9 +205,13 @@ function is_point_on_land_geodata(
     polys = if !isnothing(coastline)
         coastline
     elseif !isnothing(coastline_file)
-        load_coastline_polygons_geodata(coastline_file)
+        isfile(coastline_file) ? load_coastline_polygons_geodata(coastline_file) : NamedTuple[]
     else
         load_coastline_polygons_geodata()
+    end
+
+    if isempty(polys)
+        return false
     end
 
     x = Float64(lon)

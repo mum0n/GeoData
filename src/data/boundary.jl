@@ -157,6 +157,35 @@ function build_boundary_tracer_interpolators_geodata(
         p = sortperm(deps); deps = deps[p]; T_data = T_data[:, :, p]; S_data = S_data[:, :, p]
     end
 
+    # Extrapolate downward to fill below-seabed bathymetric NaNs with the deepest
+    # valid bottom marine water value at each (lon, lat) column.
+    for j in 1:size(T_data, 2), i in 1:size(T_data, 1)
+        # Forward pass down the water column
+        last_valid_T = NaN
+        last_valid_S = NaN
+        for k in 1:length(deps)
+            if !isnan(T_data[i, j, k])
+                last_valid_T = T_data[i, j, k]
+            elseif !isnan(last_valid_T)
+                T_data[i, j, k] = last_valid_T
+            end
+
+            if !isnan(S_data[i, j, k])
+                last_valid_S = S_data[i, j, k]
+            elseif !isnan(last_valid_S)
+                S_data[i, j, k] = last_valid_S
+            end
+        end
+    end
+
+    # Replace any remaining fully-dry land column NaNs with domain-average ocean values
+    valid_T_all = filter(!isnan, T_data)
+    valid_S_all = filter(!isnan, S_data)
+    default_T = isempty(valid_T_all) ? 10.0 : mean(valid_T_all)
+    default_S = isempty(valid_S_all) ? 35.0 : mean(valid_S_all)
+    replace!(T_data, NaN => default_T)
+    replace!(S_data, NaN => default_S)
+
     # Create 3D interpolators (lon, lat, depth)
     itp_T = interpolate((lons, lats, deps), T_data, Gridded(Linear()))
     itp_T_ext = extrapolate(itp_T, Flat())

@@ -32,6 +32,7 @@ TranscodingStreams = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
 UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
 WellKnownGeometry = "0f680547-7be7-4555-8820-bb198eeb646b"
 Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 
 [compat]
 ArchGDAL = "0.10"

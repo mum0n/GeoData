@@ -201,3 +201,68 @@ julia --project=. scripts/fetch_baseline_geodata.jl [options]
 - `--skip-tides`: Skip TPXO9 tidal velocity download.
 - `--force`: Force re-download even if cache files exist.
 - `--dry-run`: Display planned actions without executing network transfers.
+
+---
+
+## 8. Hierarchical Analytical Storage (`GeoStorage`)
+
+`GeoStorage` provides an abstraction over multi-group scientific archives (such as simulation runs, Lagrangian particle trajectories, metrics, and demographic connectivity matrices) across chunked tensor stores (Zarr) and partitioned tabular collections (GeoParquet).
+
+```julia
+using GeoData
+
+# Open or initialize storage container
+st = open_geostorage("outputs/larval_trajectories.zarr"; backend=:zarr, read_only=false)
+
+# Group navigation and variable serialization
+write_storage_variable!(st, "trajectories/run1/lons", [-64.2, -64.1, -64.0])
+lons = read_storage_variable(st, "trajectories/run1/lons")
+
+# Release locks and flush buffers
+close_geostorage(st)
+```
+
+### Core API Functions:
+- **`open_geostorage(uri::AbstractString; backend=:auto, read_only=false, create=true) -> GeoStorage`**: Open or initialize storage at `uri`.
+- **`close_geostorage(storage::GeoStorage) -> Nothing`**: Flush buffers and release file locks.
+- **`create_storage_group(storage::GeoStorage, group_path::AbstractString)`**: Create nested hierarchical groups.
+- **`has_storage_group(storage::GeoStorage, group_path::AbstractString) -> Bool`**: Query group presence.
+- **`write_storage_variable!(storage::GeoStorage, var_path::AbstractString, data; chunks=nothing, compressor=nothing)`**: Write array, vector, or table.
+- **`read_storage_variable(storage::GeoStorage, var_path::AbstractString)`**: Read array or table at `var_path`.
+
+---
+
+## 9. Unified Environmental Data Cube (`GeoData.Data.RegionalCube`)
+
+The regional cube engine consolidates static geophysics (ETOPO bathymetry), physical oceanography (GLORYS12V1 / WOA23 $T, S, u, v$), and marine biogeochemistry (WOA23 / CMEMS $[\mathrm{O}_2], \mathrm{pH}, \mathrm{NO}_3, \mathrm{PO}_4, \mathrm{Si}, \text{Chl-}a$) into unified, self-describing chunked Zarr cubes.
+
+### Configuration Schema (`RegionalCubeConfig`)
+
+```julia
+cfg = RegionalCubeConfig(
+    region_name = "scotian_shelf",
+    lon_range = (-71.0, -53.0),
+    lat_range = (40.0, 48.5),
+    resolution_deg = 1.0 / 12.0,
+    depth_levels = standard_ocean_depths(),
+    time_mode = :climatology, # or :timeseries, :hybrid
+    time_step = :climatology_monthly,
+    climatology_months = collect(1:12),
+    variables = [:elevation, :bottom_depth, :temperature, :salinity, :u, :v, :dissolved_oxygen, :ph],
+    output_path = "data/cubes/scotian_shelf_environmental.zarr"
+)
+```
+
+### Ingestion & Bioenergetic Functions:
+- **`load_cube_config(path::AbstractString) -> RegionalCubeConfig`**: Load declarative TOML specification.
+- **`standard_ocean_depths() -> Vector{Float64}`**: 47 oceanographic depth levels (surface-refined down to 4000 m).
+- **`assimilate_regional_cube(config::RegionalCubeConfig; verbose=true) -> String`**: Ingest, harmonize, and serialize data cube to Zarr store.
+- **`build_cube_hsi_evaluator(cube_path::AbstractString) -> Function`**: Build high-performance callable `(lon, lat, depth, month) -> Float64` incorporating bathymetric and thermal habitat suitability constraints.
+- **`evaluate_bioenergetic_scope(temp, dissolved_o2, ph; t_opt=3.0, t_max=10.0, k_o2=60.0, ph_ref=8.1) -> Float64`**: Compute physiological metabolic scope $\mu \in [0, 1]$:
+  $$\mu = \mu_{\max}(T) \cdot \frac{[\mathrm{O}_2]}{K_{O2} + [\mathrm{O}_2]} \cdot f(\mathrm{pH})$$
+
+### Standalone CLI Execution:
+```bash
+julia --project=projects/GeoData scripts/assimilate_environmental_cube.jl --config=configs/regions/scotian_shelf.toml
+```
+
