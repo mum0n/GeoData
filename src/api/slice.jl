@@ -1,43 +1,77 @@
 """
-High-level API: slicing datasets.
+High-level API: dataset slicing.
 """
 
-export geoslice, geoslice_bbox
+export geoslice, geoselect, geosubset_ids, geosubset_cube, geoslice_bbox
 
 """
-    geoslice(ds::GeoDataset; kwargs...) -> GeoDataset
+    geoslice(data::GeoDataset; kwargs...) -> GeoDataset
 
-Slice a dataset by coordinate ranges.
+Return a subset of `data` selected by coordinate range, coordinate list, or single value.
+See `GeoDataOperations.slice` for the keyword contract: a `(min, max)` pair selects a
+range, a vector selects those coordinates, and a single value selects a point and drops
+the dimension.
 
-# Keywords (per dimension)
-- `lon = (min, max)` — longitude range
-- `lat = (min, max)` — latitude range
-- `depth = (min, max)` — depth range
-- `time = (min, max)` — time range
-
-A keyword may also be a single value (nearest point, drops the dimension)
-or a vector of values (select those points).
-
-# Examples
-```julia
-ds_sub = geoslice(ds, lon=(-70, -55), lat=(40, 50))
-ds_sub = geoslice(ds, depth=(0, 100), time=0.0)  # single time, drops time dim
-```
+`backend` is accepted and ignored: slicing is a generic coordinate operation and runs the
+same way for every backend. It is retained so callers do not have to special-case a
+dataset they happened to load from Zarr.
 """
-function geoslice(ds::GeoDataset; kwargs...)
-    if ds.backend !== nothing && hasmethod(backend_slice, Tuple{typeof(ds.backend), GeoDataset})
-        return backend_slice(ds.backend, ds; kwargs...)
-    else
-        return slice(ds; kwargs...)
-    end
+function geoslice(data::GeoDataset; backend = nothing, kwargs...)
+    return slice(data; kwargs...)
 end
 
-# Convenience: slice by bounding box
 """
-    geoslice_bbox(ds::GeoDataset; lon::Tuple, lat::Tuple, depth::Tuple=(0, Inf), time::Tuple=(0, Inf)) -> GeoDataset
+    geoselect(data::GeoDataset; kwargs...) -> GeoDataset
 
-Slice by bounding box.
+Select specific coordinate values. `geoselect` and `geoslice` share one contract (see
+`GeoDataOperations.slice`); both names are kept because callers read differently.
 """
-function geoslice_bbox(ds::GeoDataset; lon::Tuple, lat::Tuple, depth::Tuple=(0, Inf), time::Tuple=(0, Inf))
-    return geoslice(ds; lon=lon, lat=lat, depth=depth, time=time)
+function geoselect(data::GeoDataset; backend = nothing, kwargs...)
+    return select_values(data; kwargs...)
+end
+
+"""
+    geoslice_bbox(ds::GeoDataset; lon_range=nothing, lat_range=nothing, depth_range=nothing, time_range=nothing, backend=nothing) -> GeoDataset
+
+Slice to a geographic bounding box given in degrees.
+
+A range is applied only when the dataset has that dimension, so a 2-D bathymetry set can
+be sliced with the same keyword list as a 4-D temperature set. Ranges outside the
+dataset's extent snap inward, never silently expanding it.
+"""
+function geoslice_bbox(ds::GeoDataset; lon_range = nothing, lat_range = nothing,
+                       depth_range = nothing, time_range = nothing, backend = nothing)
+    kwargs = Dict{Symbol, Any}()
+    for (dim, rng) in ((:lon, lon_range), (:lat, lat_range), (:depth, depth_range),
+                       (:time, time_range))
+        if rng === nothing
+            continue
+        end
+        if !haskey(ds.dims, dim)
+            continue     # the dataset has no such axis; nothing to bound
+        end
+        kwargs[dim] = rng
+    end
+    isempty(kwargs) && error(
+        "geoslice_bbox got no range that applies to this dataset. Dimensions present: " *
+        "$(sort(collect(keys(ds.dims)))).")
+    return geoslice(ds; backend = backend, kwargs...)
+end
+
+"""
+    geosubset_ids(ds::GeoDataset, var::String, coord::Symbol, ids::Vector{Int}) -> GeoDataset
+
+Subset to explicit integer indices along `coord`, in the given order. The indices are
+translated to coordinate values, so the result keeps working for every later operation
+that selects by coordinate.
+"""
+function geosubset_ids(ds::GeoDataset, var::String, coord::Symbol, ids::Vector{Int})
+    haskey(ds.coords, coord) || error(
+        "Cannot subset by :$coord: the dataset has no such coordinate. Coordinates: " *
+        "$(sort(collect(keys(ds.coords)))).")
+    isempty(ids) && error("geosubset_ids needs at least one index.")
+    c = vec(ds.coords[coord].data)
+    all(1 .<= ids .<= length(c)) || error("Indices out of range for :$coord (1..$(length(c))).")
+    # Selecting by coordinate value keeps the order and any duplicates of `ids`.
+    return geoslice(ds; coord => c[ids])
 end

@@ -1,0 +1,11 @@
+# Runs and caches
+/scratch/
+/test/scratch/
+/inputs/
+*.part
+
+# Outputs
+*.nc
+*.zarr
+*.parquet
+*.tsv

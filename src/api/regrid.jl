@@ -25,11 +25,7 @@ ds_regrid = georegrid(ds, target_grid, method=:nearest, vars=["temperature"])
 ```
 """
 function georegrid(ds::GeoDataset, target_grid::GeoDataset; method::Symbol=:bilinear, vars::Vector{String}=String[])
-    if ds.backend !== nothing && hasmethod(backend_regrid, Tuple{typeof(ds.backend), GeoDataset, GeoDataset})
-        return backend_regrid(ds.backend, ds, target_grid; method=method, vars=vars)
-    else
-        return regrid(ds, target_grid; method=method, vars=vars)
-    end
+    return regrid(ds, target_grid; method=method, vars=vars)
 end
 
 # Convenience: regrid to regular lat/lon grid

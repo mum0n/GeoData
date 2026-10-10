@@ -7,15 +7,11 @@ export geoindex, geosubset, geosubset_spatial, geosubset_temporal
 """
     geoindex(ds::GeoDataset; spatial::Bool=true, temporal::Bool=true) -> GeoIndex
 
-Build a spatial/temporal index for fast queries.
+Build a spatial/temporal index for fast queries. Runs on the generic index in
+`GeoDataOperations.build_index`; backends do not carry their own index.
 """
-function geoindex(ds::GeoDataset; spatial::Bool=true, temporal::Bool=true)
-    if ds.backend !== nothing && hasmethod(backend_index, Tuple{typeof(ds.backend), GeoDataset})
-        return backend_index(ds.backend, ds; spatial=spatial, temporal=temporal)
-    else
-        return build_index(ds; spatial=spatial, temporal=temporal)
-    end
-end
+geoindex(ds::GeoDataset; spatial::Bool = true, temporal::Bool = true) =
+    build_index(ds; spatial = spatial, temporal = temporal)
 
 """
     geosubset(ds::GeoDataset; bbox::Tuple, time_range::Tuple) -> GeoDataset

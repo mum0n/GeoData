@@ -10,8 +10,8 @@ export geoload, open_dataset, close_dataset, infer_backend
 Load a dataset from a URI, auto-detecting the backend from the file extension or scheme.
 
 # Arguments
-- `uri`: Source URI (file path, `zarr://`, `netcdf://`, `nczarr://`, `geoparquet://`, `yaxarray://`)
-- `backend`: Backend name (`:zarr`, `:ncdatasets`, `:yaxarray`, `:geoparquet`) or instance
+- `uri`: Source URI (file path, `zarr://`, `netcdf://`, `nczarr://`, `geoparquet://`)
+- `backend`: Backend name (`:zarr`, `:ncdatasets`, `:nczarr`, `:geoparquet`) or instance
 - `kwargs`: Backend-specific options
 
 # Examples
@@ -22,7 +22,7 @@ ds = geoload("data/temperature.parquet")
 ```
 """
 function geoload(uri::String; backend::Union{Symbol, GeoBackend, Nothing}=nothing, kwargs...)
-    be = _resolve_backend(backend, uri)
+    be = resolve_backend(backend, uri)
     return backend_open(be, uri; kwargs...)
 end
 

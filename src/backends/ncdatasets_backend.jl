@@ -1,228 +1,235 @@
 """
-NCDatasets backend for NetCDF files (classic and Zarr).
+    ncdatasets_backend.jl
+
+NetCDF and NetCDF-Zarr storage backend (read/modify/create).
+
+Axes are self-describing here: the file declares each variable's dimensions, so a
+1-D data variable is never mistaken for a coordinate. Time axes that carry CF
+`units` are decoded to numeric values, as documented on `_read_coord`.
 """
 
 using NCDatasets
-using CFTime
-using Dates
 
 """
-    NCDatasetsBackend
+    NCDatasetsBackend(; format=nothing)
 
-Backend for NetCDF files using NCDatasets.jl. Supports classic NetCDF and NCZarr.
+NetCDF backend. `format` selects the container NCDatasets writes (`"netcdf4"` by
+default, `"nczarr"` for a Zarr-backed NetCDF store).
 """
 struct NCDatasetsBackend <: GeoBackend
-    format::String  # "netcdf4", "nczarr", etc.
+    format::String
+    NCDatasetsBackend(; format::Union{Nothing, AbstractString} = nothing) = new(something(format, "netcdf4"))
 end
 
-NCDatasetsBackend(; format="netcdf4") = NCDatasetsBackend(format)
-
-function backend_capabilities(backend::NCDatasetsBackend)
-    return BackendCapabilities(read=true, write=true, lazy=false, chunked=true, compression=true, remote=false)
-end
-
-function backend_open(backend::NCDatasetsBackend, uri::String; mode::String="r", kwargs...)
-    path = _ncdatasets_uri_to_path(uri)
-    format = _infer_format(uri, backend.format)
-    
-    return NCDataset(path, mode; format=format, kwargs...) do ds
-        vars = Dict{String, GeoArray}()
+function backend_open(backend::NCDatasetsBackend, uri::AbstractString;
+                      format::Union{Nothing, AbstractString} = nothing, kwargs...)
+    path = strip_scheme(uri)
+    mode = haskey(kwargs, :mode) ? kwargs[:mode] : "r"
+    fmt = something(format, _infer_format(path, backend))
+    NCDataset(path, mode; format = fmt) do ds
+        crs = CoordinateSystem(crs = something(get(ds.attrib, "crs", nothing), "EPSG:4326"))
         coords = Dict{Symbol, GeoArray}()
         dims = Dict{Symbol, Dimension}()
-        
-        # First pass: identify coordinate variables (1D vars matching dimension names)
-        coord_names = Set{Symbol}()
-        for name in keys(ds)
-            v = ds[name]
-            if ndims(v) == 1
-                canon = standardize_dimension_name(Symbol(name))
-                if canon in (:lon, :lat, :depth, :time)
-                    data = _read_coord(v)
-                    dim = Dimension(name=canon, size=length(data), coords=data,
-                                  units=get(v.attrib, "units", ""),
-                                  standard_name=string(canon),
-                                  calendar=get(v.attrib, "calendar", nothing))
-                    coords[canon] = GeoArray(data, (dim,), CoordinateSystem(), Dict{String, Any}(v.attrib))
-                    dims[canon] = dim
-                    push!(coord_names, canon)
-                end
+        vars = Dict{String, GeoArray}()
+
+        # Coordinate variables: the 1-D variable whose name is its own dimension.
+        for (vname, v) in ds
+            if ndims(v) != 1 || NCDatasets.dimnames(v)[1] != vname
+                continue
             end
+            canon = standardize_dimension_name(Symbol(vname))
+            val = _read_coord(v, vname)
+            d = Dimension(name = canon, size = length(val), coords = val,
+                          units = get(v.attrib, "units", nothing),
+                          standard_name = get(v.attrib, "standard_name", nothing),
+                          calendar = get(v.attrib, "calendar", nothing))
+            dims[canon] = d
+            coords[canon] = GeoArray(val, (d,), crs, Dict(v.attrib))
         end
-        
-        # Second pass: data variables
-        for name in keys(ds)
-            v = ds[name]
-            canon = standardize_dimension_name(Symbol(name))
-            canon in coord_names && continue
-            
-            raw_vals = v[:]
-            data = if eltype(raw_vals) >: Missing
-                arr = Array{Float64}(undef, size(v)...)
-                for (idx, val) in enumerate(raw_vals)
-                    arr[idx] = ismissing(val) ? NaN : Float64(val)
-                end
-                arr
-            else
-                reshape(Array{Float64}(raw_vals), size(v)...)
+
+        for (vname, v) in ds
+            if ndims(v) == 1 && NCDatasets.dimnames(v)[1] == vname
+                continue   # already read as a coordinate
             end
-            dn = String.(dimnames(v))
-            dim_objs = [_nc_dim_from_var(dn[i], ds, dims, coords) for i in 1:length(dn)]
-            vars[name] = GeoArray(data, tuple(dim_objs...), CoordinateSystem(), Dict{String, Any}(v.attrib))
+            vars[vname] = GeoArray(_read_data(v), _dims_for(size(v), v, dims), crs,
+                                   Dict(v.attrib))
         end
-        
-        GeoDataset(vars, coords, dims, CoordinateSystem(), Dict{String, Any}(ds.attrib), backend, uri)
+
+        return GeoDataset(vars, coords, dims, crs, Dict(ds.attrib), backend, path)
     end
 end
 
-function backend_create(backend::NCDatasetsBackend, uri::String; dims::Dict{Symbol, Dimension},
-                       variables::Dict{String, <:AbstractArray}, coords::Dict{Symbol, <:AbstractArray},
-                       crs::CoordinateSystem, attrs::Dict{String, Any}, kwargs...)
-    path = _ncdatasets_uri_to_path(uri)
-    format = _infer_format(uri, backend.format)
-    
-    NCDataset(path, "c"; format=format, kwargs...) do ds
-        # Define dimensions
-        for (dim, d) in dims
-            defDim(ds, string(dim), d.size)
-        end
-        
-        # Write coordinate variables
-        for (dim, coord) in coords
-            v = defVar(ds, string(dim), eltype(coord), (string(dim),))
-            v.attrib["units"] = dims[dim].units
-            v[:] = coord
-        end
-        
-        # Write data variables
-        for (name, data) in variables
-dim_names = _ncdatasets_infer_dim_names_from_size(size(data), dims)
-            v = defVar(ds, name, eltype(data), tuple(String.(dim_names)...))
-            v[:] = data
-        end
-        
-        for (k, v) in attrs
-            ds.attrib[k] = v
-        end
+function _infer_format(path::AbstractString, backend::NCDatasetsBackend)
+    return _default_format(backend)
+end
+
+"""
+    _default_format(backend) -> String
+
+Container format for a new file. NetCDF-4 is used because it supports groups, strings,
+compression, and unlimited dimensions; the NCZarr backend-builder switches to `nczarr`.
+"""
+_default_format(backend::NCDatasetsBackend) = Symbol(something(backend.format, "netcdf4"))
+
+"""
+    _dims_for(shape, v, dims) -> Tuple{Vararg{Dimension}}
+
+Dimension records for one variable of shape `shape`, taken from the file's own
+`dimnames` when available and from shape matching otherwise.
+"""
+function _dims_for(shape::Tuple, v, dims::Dict{Symbol, Dimension})
+    names = try
+        map(Symbol, NCDatasets.dimnames(v))
+    catch
+        infer_dim_names_from_size(shape, dims)
     end
-    
-    return GeoDataset(
-        Dict(k => GeoArray(v, _ncdatasets_dims_to_tuple(k, v, dims, coords), crs, Dict{String, Any}()) for (k, v) in variables),
-        Dict(k => GeoArray(v, (dims[k],), crs, Dict{String, Any}()) for (k, v) in coords),
-        dims, crs, attrs, backend, uri
-    )
-end
-
-function backend_write(backend::NCDatasetsBackend, dataset::GeoDataset; uri::Union{String, Nothing}=nothing,
-                      variables::Dict{String, <:AbstractArray}=Dict(),
-                      coords::Dict{Symbol, <:AbstractArray}=Dict(), attrs::Dict{String, Any}=Dict(),
-                      mode::String="update", kwargs...)
-    target = uri !== nothing ? uri : dataset.source
-    path = _ncdatasets_uri_to_path(target)
-    NCDataset(path, "r+") do ds
-        for (name, data) in variables
-            if haskey(ds, name)
-                ds[name][:] = data
-            else
-                dim_names = _ncdatasets_infer_dim_names_from_size(size(data), dataset.dims)
-                v = defVar(ds, name, eltype(data), tuple(String.(dim_names)...))
-                v[:] = data
-            end
+    records = Dimension[]
+    for (i, name) in enumerate(names)
+        canon = standardize_dimension_name(name)
+        d = get(dims, canon, nothing)
+        if d === nothing
+            d = Dimension(name = canon, size = shape[i], coords = nothing)
+            dims[canon] = d
         end
-        
-        for (dim, data) in coords
-            if haskey(ds, string(dim))
-                ds[string(dim)][:] = data
-            end
-        end
-        
-        for (k, v) in attrs
-            ds.attrib[k] = v
-        end
+        push!(records, Dimension(d; size = shape[i]))
     end
-    
-    return nothing
+    return tuple(records...)
 end
 
-function backend_close(backend::NCDatasetsBackend, dataset::GeoDataset)
-    return nothing
-end
+"""
+    _read_coord(v, vname) -> Vector{Float64}
 
-function _ncdatasets_uri_to_path(uri::String)
-    for prefix in ("netcdf://", "nczarr://", "file://")
-        startswith(uri, prefix) && return uri[length(prefix)+1:end]
-    end
-    return uri
-end
+Read a coordinate variable as numeric values.
 
-function _infer_format(uri::String, default::String)
-    lowercase(uri) |> u -> startswith(u, "nczarr://") ? :nczarr : Symbol(default)
-end
-
-function _read_coord(v)
+Numeric axes are passed through in the file's own units - no axis convention is
+imposed at load time, so what comes back is what the file says. A variable NCDatasets
+decoded into dates (because its `units` say "days/hours since ...") is expressed in unix
+seconds instead, since a `DateTime` has no place in a file-neutral coordinate array. A
+calendar that cannot be represented as a `DateTime` raises: a silently wrong date is
+worse than an error.
+"""
+function _read_coord(v, vname::AbstractString)
     raw = v[:]
-    if eltype(raw) <: Dates.AbstractTime || eltype(raw) <: CFTime.AbstractCFDateTime ||
-       (!isempty(raw) && (first(raw) isa Dates.AbstractTime || first(raw) isa CFTime.AbstractCFDateTime))
-        return Float64[Dates.datetime2unix(DateTime(Dates.year(t), Dates.month(t), Dates.day(t),
-                                                    Dates.hour(t), Dates.minute(t), Dates.second(t))) for t in raw]
-    elseif haskey(v.attrib, "units") && occursin("since", v.attrib["units"])
-        units = v.attrib["units"]
-        try
-            epoch, calendar = parse_time_units(units)
-            data = Float64.(raw)
-            return [datetime_to_time(DateTime(t), units) for t in CFTime.num2date(data, units)]
-        catch
-            return Float64.(raw)
-        end
-    else
-        return collect(Float64, raw)
-    end
-end
+    isempty(raw) && return Float64[]
+    eltype(raw) <: Number && return collect(Float64, raw)
 
-function _nc_dim_from_var(dim_name, ds, dims, coords)
-    canon = standardize_dimension_name(Symbol(dim_name))
-    if haskey(dims, canon)
-        d = dims[canon]
-        coords_arr = get(coords, canon, nothing)
-        coords_vec = coords_arr isa GeoArray ? coords_arr.data : coords_arr
-        return Dimension(name=canon, size=d.size, coords=coords_vec, units=d.units,
-                         standard_name=d.standard_name, calendar=d.calendar)
-    elseif haskey(dims, Symbol(dim_name))
-        d = dims[Symbol(dim_name)]
-        coords_arr = get(coords, Symbol(dim_name), nothing)
-        coords_vec = coords_arr isa GeoArray ? coords_arr.data : coords_arr
-        return Dimension(name=Symbol(dim_name), size=d.size, coords=coords_vec, units=d.units,
-                         standard_name=d.standard_name, calendar=d.calendar)
-    end
-    # Fallback
-    if haskey(ds, dim_name)
-        v = ds[dim_name]
-        data = _read_coord(v)
-        return Dimension(name=canon, size=length(data), coords=data,
-                         units=get(v.attrib, "units", ""),
-                         standard_name=string(canon),
-                         calendar=get(v.attrib, "calendar", nothing))
-    else
-        dim_len = ds.dim[dim_name]
-        return Dimension(name=canon, size=dim_len, coords=collect(Float64, 1:dim_len))
-    end
-end
-
-function _ncdatasets_infer_dim_names_from_size(shape, dims)
-    names = Symbol[]
-    for s in shape
-        found = nothing
-        for (dim, d) in dims
-            if d.size == s
-                found = dim
-                break
+    # A coordinate the file decoded into dates is expressed in unix seconds, since a
+    # `DateTime` has no place in a file-neutral coordinate array. Missing coordinates
+    # become NaN rather than an error: WOA23's `time` axis carries a `missing` at its head
+    # in the shared-risk feed, and `collect(Float64, ...)` on `Union{Missing, Date}` raised
+    # before it. An axis with no valid values is a corrupt file and still errors.
+    try
+        vals = if eltype(raw) <: Union
+            map(raw) do t
+                ismissing(t) && return NaN
+                t isa Dates.AbstractTime || error("not a DateTime")
+                Dates.value(Dates.DateTime(t)) / 1000.0
+            end
+        else
+            map(raw) do t
+                t isa Dates.AbstractTime || error("not a DateTime")
+                Dates.value(Dates.DateTime(t)) / 1000.0
             end
         end
-        push!(names, isnothing(found) ? Symbol("dim$(length(names)+1)") : found)
+        return Float64.(vals)
+    catch
+        error("Could not read coordinate '$vname' as numeric values: the file's " *
+              "calendar cannot be represented as a DateTime. Read the variable with " *
+              "NCDatasets directly, or resample the axis onto a numeric time base.")
     end
-    return names
 end
 
-function _ncdatasets_dims_to_tuple(name, data, dims, coords)
-    dim_names = _ncdatasets_infer_dim_names_from_size(size(data), dims)
-    return tuple([_nc_dim_from_var(String(dn), nothing, dims, coords) for dn in dim_names]...)
+"""
+    _read_data(v) -> Array{Float64}
+
+Read a data variable into its declared shape, mapping missing values to `NaN`.
+
+NCDatasets' `v[:]` returns a flat vector even for N-dimensional variables, so the result
+is reshaped to `size(v)`; keeping the shape is what makes the dimension records line up
+with the data.
+"""
+function _read_data(v)
+    raw = collect(v[:])
+    # Decided by the element type, not by `NCDatasets.ismissing`. `ismissing` asks whether
+    # the variable declares `missing_value`, and WOA23's `t_an` declares `fillvalue` with an
+    # empty `missing_values` attribute: NCDatasets still types the array
+    # `Union{Missing, Float32}` and fills those cells with `missing`, `ismissing` says no, and
+    # the conversion below then fails on the first filled cell. The element type cannot lie.
+    if Missing <: eltype(raw) || eltype(raw) <: Missing
+        values = map(raw) do x
+            ismissing(x) ? NaN : Float64(x)
+        end
+    else
+        values = map(raw) do x
+            Float64(x)
+        end
+    end
+    return reshape(values, size(v))
+end
+
+function backend_create(backend::NCDatasetsBackend, uri::AbstractString,
+                        dims::Dict{Symbol, Dimension}; kwargs...)
+    path = strip_scheme(uri)
+    fmt = something(haskey(kwargs, :format) ? kwargs[:format] : nothing,
+                    _default_format(backend))
+    mode = haskey(kwargs, :mode) ? kwargs[:mode] : "c"
+    overwrite = get(kwargs, :overwrite, false)
+    if isfile(path) && overwrite
+        rm(path)
+    end
+    return NCDataset(path, mode; format = fmt)
+end
+
+function backend_write(backend::NCDatasetsBackend, uri::AbstractString,
+                       ds::GeoDataset; kwargs...)
+    path = strip_scheme(uri)
+    fmt = something(haskey(kwargs, :format) ? kwargs[:format] : nothing,
+                    _default_format(backend))
+    overwrite = get(kwargs, :overwrite, false)
+    exists = isfile(path)
+    if exists && overwrite
+        rm(path)
+        exists = false
+    end
+
+    ds_file = NCDataset(path, exists ? "a" : "c"; format = fmt)
+    try
+        for (dim, d) in ds.dims
+            if !haskey(ds_file.dim, dim)
+                defDim(ds_file, dim, d.is_unlimited ? Inf : d.size)
+            end
+            if d.coords !== nothing && !haskey(ds_file, string(dim))
+                defVar(ds_file, dim, Float64, (dim,),
+                       attrib = Dict("units" => something(d.units, "")))
+                ds_file[dim][:] = collect(Float64, d.coords)
+            end
+        end
+
+        for (name, ga) in ds.variables
+            sz = size(ga.data)
+            axes = [dimension_name(ga, i) for i in 1:length(sz)]
+            check_declared_dims(sz, axes, ds.dims)
+            if !haskey(ds_file, name)
+                defVar(ds_file, name, eltype(ga.data), tuple(axes...); attrib = ga.attrs)
+            end
+            ds_file[name][ntuple(_ -> Colon(), ndims(ga))...] = ga.data
+        end
+
+        for (k, v) in ds.attrs
+            ds_file.attrib[k] = v
+        end
+    finally
+        close(ds_file)
+    end
+    return ds
+end
+
+"""
+    backend_capabilities(backend::NCDatasetsBackend)
+
+NetCDF files are read and written through NCDatasets, which materialises variables on
+`getindex`; the backend does not expose lazy views, so `lazy` is false here.
+"""
+function backend_capabilities(backend::NCDatasetsBackend)
+    BackendCapabilities(read = true, write = true, lazy = false, chunked = true)
 end

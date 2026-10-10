@@ -9,7 +9,7 @@ and demographic connectivity matrices) across both chunked tensor arrays (Zarr)
 and tabular partitioned collections (GeoParquet).
 """
 
-using ..GeoDataCoreTypes
+using ..GeoDataTypes
 using DataFrames
 using Dates
 import Zarr

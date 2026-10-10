@@ -24,11 +24,7 @@ ds_joined = geojoin([ds1, ds2], on=[:lon, :lat], how=:outer)
 ```
 """
 function geojoin(datasets::Vector{GeoDataset}; on::Vector{Symbol}, how::Symbol=:inner)
-    if !isempty(datasets) && datasets[1].backend !== nothing && hasmethod(backend_join, Tuple{typeof(datasets[1].backend), Vector{GeoDataset}})
-        return backend_join(datasets[1].backend, datasets; on=on, how=how)
-    else
-        return join_datasets(datasets; on=on, how=how)
-    end
+    return join_datasets(datasets; on=on, how=how)
 end
 
 # Convenience: merge variables from multiple datasets with same grid

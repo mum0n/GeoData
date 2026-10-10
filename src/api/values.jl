@@ -24,11 +24,7 @@ vals = geovalues(ds, ["temperature"], lon=[-65.0, -66.0], lat=[45.0, 46.0])
 ```
 """
 function geovalues(ds::GeoDataset, varnames::Vector{String}; kwargs...)
-    if ds.backend !== nothing && hasmethod(backend_values, Tuple{typeof(ds.backend), GeoDataset, Vector{String}})
-        return backend_values(ds.backend, ds, varnames; kwargs...)
-    else
-        return values_at(ds, varnames; kwargs...)
-    end
+    return values_at(ds, varnames; kwargs...)
 end
 
 """

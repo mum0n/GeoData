@@ -4,7 +4,7 @@ Core type definitions for GeoData.
 Generic n-dimensional array containers with coordinate metadata.
 No geographic assumptions in the core - CRS defaults to cartesian.
 """
-module GeoDataCoreTypes
+module GeoDataTypes
 
 using Base: @kwdef
 
@@ -29,7 +29,8 @@ Describes a single dimension of a dataset.
 - `name::Symbol`: Dimension name (e.g., `:x`, `:y`, `:t`, `:chain`, `:draw`, `:param`)
 - `size::Union{Int, Nothing}`: Size (number of points) or `nothing` if unknown/unbounded
 - `coords::Union{AbstractVector, Nothing}`: Coordinate values if known
-- `units::String`: Units (e.g., "m", "s", "K", "" for dimensionless)
+- `units::Union{String, Nothing}`: Units, or `nothing` when unknown (distinct from
+  dimensionless, which is `"1"`)
 - `standard_name::Union{String, Nothing}`: Optional standard name
 - `dim_type::DimensionType`: Semantic type of dimension
 - `calendar::Union{String, Nothing}`: Calendar for time dimensions
@@ -39,12 +40,32 @@ Describes a single dimension of a dataset.
     name::Symbol
     size::Union{Int, Nothing} = nothing
     coords::Union{AbstractVector, Nothing} = nothing
-    units::String = ""
+    units::Union{String, Nothing} = nothing
     standard_name::Union{String, Nothing} = nothing
     dim_type::DimensionType = DIM_GENERIC
     calendar::Union{String, Nothing} = nothing
     is_unlimited::Bool = false
 end
+
+"""
+    Dimension(existing::Dimension; kwargs...)
+
+Copy `existing` with the given fields replaced. Needed by every operation that narrows
+an axis: the units, calendar, and semantic type must survive.
+"""
+function Dimension(d::Dimension; kwargs...)
+    base = NamedTuple(f => getfield(d, f) for f in fieldnames(Dimension))
+    return Dimension(; base..., kwargs...)
+end
+
+"""
+    Dimension(name::Symbol, size::Int; kwargs...)
+
+Convenience constructor for tests and ad-hoc datasets; the remaining fields take their
+defaults.
+"""
+Dimension(name::Symbol, size::Int; kwargs...) =
+    Dimension(; name = name, size = size, kwargs...)
 
 """
     CoordinateSystem
@@ -104,27 +125,47 @@ struct GeoArray{T, N, A <: AbstractArray{T, N}}
 end
 
 # Constructor with inference
+#
+# `attrs` accepts any dictionary of attributes, whose keys may be strings or symbols:
+# every backend spells attributes differently, and the stored form is Dict{String, Any}.
 function GeoArray(data::A; dims::Vector{Dimension} = Dimension[],
                   crs::CoordinateSystem = CoordinateSystem(),
-                  attrs::Dict{String, Any} = Dict{String, Any}()) where {T, N, A <: AbstractArray{T, N}}
+                  attrs = Dict{String, Any}()) where {T, N, A <: AbstractArray{T, N}}
     if isempty(dims)
         # Infer dimensions from array axes
         dims = [Dimension(name=Symbol("dim$i"), size=size(data, i)) for i in 1:N]
     end
-    GeoArray{T, N, A}(data, Tuple(dims), crs, attrs)
+    GeoArray{T, N, A}(data, Tuple(dims), crs, _string_attrs(attrs))
+end
+
+"""
+    _string_attrs(attrs) -> Dict{String, Any}
+
+Normalise an attribute dictionary to `Dict{String, Any}`, coercing symbol keys to
+strings. Attributes arrive as `Dict{String, Any}` from backends, `Dict{Symbol, Any}`
+from configs, and `Dict{Any, Any}` from stores.
+"""
+function _string_attrs(attrs)
+    attrs isa Dict{String, Any} && return attrs
+    return Dict{String, Any}(string(k) => v for (k, v) in pairs(attrs))
 end
 
 # Positional constructor for compatibility
-function GeoArray(data::AbstractArray, dims::NTuple{N, Dimension}, crs::CoordinateSystem, attrs::Dict{String, Any}) where N
+function GeoArray(data::AbstractArray, dims::NTuple{N, Dimension}, crs::CoordinateSystem,
+                  attrs = Dict{String, Any}()) where N
     T = eltype(data)
-    GeoArray{T, N, typeof(data)}(data, dims, crs, attrs)
+    GeoArray{T, N, typeof(data)}(data, dims, crs, _string_attrs(attrs))
 end
 
 Base.size(A::GeoArray) = size(A.data)
 Base.ndims(A::GeoArray) = ndims(A.data)
 Base.eltype(A::GeoArray) = eltype(A.data)
-Base.getindex(A::GeoArray, i::Vararg{Int, N}) where N = A.data[i...]
-Base.IndexStyle(::Type{<:GeoArray}) = IndexStyle(A.data)
+Base.length(A::GeoArray) = length(A.data)
+Base.axes(A::GeoArray) = axes(A.data)
+Base.getindex(A::GeoArray{T, N, A_}, i::Vararg{Int, N}) where {T, N, A_} = A.data[i...]
+Base.setindex!(A::GeoArray{T, N, A_}, v, i::Vararg{Int, N}) where {T, N, A_} = A.data[i...] = v
+Base.IndexStyle(::Type{<:GeoArray{T, N, A_}}) where {T, N, A_} = IndexStyle(A_)
+Base.similar(A::GeoArray, ::Type{T}, dims::Dims) where {T} = similar(A.data, T, dims)
 
 """
     GeoDataset
@@ -224,4 +265,4 @@ export DimensionType, DIM_SPATIAL, DIM_TEMPORAL, DIM_PARAMETRIC, DIM_GENERIC
 export Dimension, CoordinateSystem, GeoArray, GeoDataset, GeoBackend, BackendCapabilities
 export is_cartesian
 
-end # module GeoDataCoreTypes
+end # module GeoDataTypes
