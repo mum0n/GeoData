@@ -65,6 +65,10 @@ Values outside the source domain are held at the nearest edge value (`Flat`
 extrapolation) rather than failing, so a query slightly outside the survey box still
 returns a real depth.
 
+The field's orientation is resolved from the dimensions the dataset declared, through
+`dim_permutation`, not from `size`: on a square grid both spellings of a pair have the same
+shape, and guessing from shape is how a transposed field stays silently misread.
+
 # Arguments
 - `ds`: bathymetry GeoDataset
 - `varname`: the elevation variable to use, or a keyword prefix to search for
@@ -77,14 +81,48 @@ function get_bathymetry_interpolator(ds::GeoDataset; varname::AbstractString = "
     (lons, _) = axis(ds, :lon)
     (lats, _) = axis(ds, :lat)
 
-    elev = elev_ga.data
+    # Orientation from the declared dimensions, not from `size`. A square grid has the same
+    # shape either way, so a size test cannot tell them apart and would read a transposed
+    # field as if it were upright.
+    permutation = dim_permutation(elev_ga.dims, :lon, :lat)
+    elevation = Array{Float64}(elev_ga.data)
+    length(lons) == size(elevation, permutation[1]) || error(
+        "Variable $(repr(elev_var)) is $(size(elevation)) with declared dimensions " *
+        "$([d.name for d in elev_ga.dims]), but :lon has $(length(lons)) values. A field " *
+        "and the axis it is gridded on must agree.")
+    length(lats) == size(elevation, permutation[2]) || error(
+        "Variable $(repr(elev_var)) is $(size(elevation)) with declared dimensions " *
+        "$([d.name for d in elev_ga.dims]), but :lat has $(length(lats)) values. A field " *
+        "and the axis it is gridded on must agree.")
 
-    # Ensure (lon, lat) ordering
-    if size(elev) == (length(lats), length(lons))
-        elev = permutedims(elev, (2, 1))
-    end
+    return get_bathymetry_interpolator(permutedims(elevation, permutation), lons, lats)
+end
 
-    itp = interpolate((lons, lats), elev, Gridded(Linear()))
+"""
+    get_bathymetry_interpolator(
+        elevation::AbstractMatrix, lon::AbstractVector, lat::AbstractVector
+    ) -> Function
+
+Create a continuous `(lon, lat) -> elevation` interpolator from raw arrays.
+
+`elevation` must be shaped `(lon, lat)`; the `GeoDataset` method above resolves that
+orientation from declared dimensions and delegates here, so there is one implementation of
+the interpolation rather than one per caller. A caller that already holds arrays -- a run
+that has just fetched its bathymetry by source and range -- can use this directly without
+rebuilding a dataset to be read straight back apart.
+"""
+function get_bathymetry_interpolator(
+    elevation::AbstractMatrix,
+    lon::AbstractVector,
+    lat::AbstractVector
+)
+    size(elevation) == (length(lon), length(lat)) || error(
+        "Elevation field is $(size(elevation)) but :lon has $(length(lon)) values and " *
+        ":lat has $(length(lat)). The field must be shaped (lon, lat); use " *
+        "`GeoData.bathymetry_arrays` to resolve a source's declared orientation first.")
+
+    itp = interpolate((collect(Float64, lon), collect(Float64, lat)),
+                      Array{Float64}(elevation), Gridded(Linear()))
     itp_flat = extrapolate(itp, Flat())
 
     return (lon::Real, lat::Real) -> Float64(itp_flat(Float64(lon), Float64(lat)))

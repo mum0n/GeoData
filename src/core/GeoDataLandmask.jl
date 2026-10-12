@@ -9,12 +9,89 @@ coastline — or has coastline rings from any source at all — should not have 
 package whose job is downloading. The boundary that matters is not "coastlines" but
 "network access": `GeoData` contains no network code, and the fetcher that produces a
 coastline file stays in `GeoDataSources`.
+
+It also holds no bundled geography. A ring set is data, and a data set that covers one
+region rather than every region would make every consumer of this generic layer carry that
+region; such sets live where regional shipped data lives.
 """
 
 using GeoData: GeoDataset
 
 export point_in_polygon, is_point_on_land_geodata, is_marine_water_geodata,
-    load_coastline_polygons
+    load_coastline_polygons, is_point_on_land, DEFAULT_COASTLINE_PATH
+
+"""
+    DEFAULT_COASTLINE_PATH
+
+Where a coastline file is looked for when a caller does not name one: the run's own
+containerised `inputs/` directory, relative to the working directory.
+
+It is a default rather than a compiled-in path so a run that stores its coastline elsewhere
+says so; and it is *absent* rather than a bundled fallback, because a hand-drawn regional
+outline masks most of a domain's land and looks like data. An absent file means the land test
+answers "not land", which is what `is_point_on_land_geodata` documents for an empty ring set:
+unknown, not assumed.
+
+This layer owns no bundled geography. A run that wants a regional ring set without fetching
+one asks the package that ships it -- `GeoDataSources.SCOTIAN_SHELF_COASTLINE` -- and passes
+it, which keeps the generic layer free of any project's study region.
+"""
+const DEFAULT_COASTLINE_PATH = joinpath("inputs", "coastline.parquet")
+
+"""
+    is_point_on_land(lon::Real, lat::Real;
+                     coastline = nothing,
+                     coastline_file = DEFAULT_COASTLINE_PATH) -> Bool
+
+Whether a coordinate is on land, reading the coastline file when the caller does not name
+one and otherwise using the rings it passes.
+
+This is `is_point_on_land_geodata` with the default file location applied, and it exists
+because every caller that does its own land test would otherwise repeat that lookup: the
+location of a run's coastline file is one decision, and repeating it is how two callers end
+up disagreeing about whether a point is land.
+
+Precedence, and why each step is what it is:
+
+1. the rings the caller passed in -- the caller knows best what coastline it is using;
+2. the rings read from `coastline_file`, when that file exists;
+3. nothing -- and the answer is "not land", which is `is_point_on_land_geodata`'s documented
+   answer for no rings: unknown, not assumed.
+
+There is deliberately no step 4 with a bundled regional ring set. This layer is generic, and a
+regional geography in it would make every consumer of the generic layer carry this project's
+study region. A regional default is the *application's* decision: pass
+`GeoDataSources.SCOTIAN_SHELF_COASTLINE` if that is what a run wants, or fetch a real
+shoreline with `GeoDataSources.fetch_natural_earth_coastline`.
+"""
+function is_point_on_land(lon::Real, lat::Real;
+                          coastline::Union{Nothing, AbstractVector{<:NamedTuple}} = nothing,
+                          coastline_file::Union{Nothing, AbstractString} = DEFAULT_COASTLINE_PATH)
+    if !isnothing(coastline)
+        return is_point_on_land_geodata(lon, lat; coastline = coastline)
+    end
+    rings = isnothing(coastline_file) ? NamedTuple[] : load_coastline_polygons(String(coastline_file))
+    return is_point_on_land_geodata(lon, lat; coastline = rings)
+end
+
+"""
+    load_coastline_polygons(; coastline_path = DEFAULT_COASTLINE_PATH) -> Vector{NamedTuple}
+
+Coastline rings from the default location when the caller does not name a file.
+
+Absent file means no rings, and no rings means "unknown, not land" to
+`is_point_on_land_geodata` -- which is the honest answer, and better than a coarse regional
+outline that silently rejects land a run never asked about. A run that wants a regional ring
+set without fetching one asks the package that ships it: `GeoDataSources`.
+`SCOTIAN_SHELF_COASTLINE`.
+
+The positional form `load_coastline_polygons(path)` is unchanged: naming a file means the file
+was meant to be read.
+"""
+function load_coastline_polygons(; coastline_path::Union{Nothing, AbstractString} = DEFAULT_COASTLINE_PATH)
+    isnothing(coastline_path) && return NamedTuple[]
+    return load_coastline_polygons(String(coastline_path))
+end
 
 """
     point_in_polygon(x::Real, y::Real, poly_lons::AbstractVector, poly_lats::AbstractVector) -> Bool

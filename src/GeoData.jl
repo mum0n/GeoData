@@ -77,6 +77,10 @@ using .GeoDataOperations
 
 # Analysis over data already in hand: grid-to-grid interpolation, land/ocean tests, and
 # bathymetry interrogation. Included after the core types so their signatures resolve.
+#
+# The generic data layer holds no bundled geography. The coastline rings for this project's
+# study region live in GeoDataSources, which is where regional shipped data belongs; the
+# landmask takes whatever rings a caller gives it and applies no default of its own.
     include("core/GeoDataOpenGrid.jl")
     include("core/GeoDataLandmask.jl")
     include("core/GeoDataBathy.jl")
