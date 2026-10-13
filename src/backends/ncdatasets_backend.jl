@@ -207,7 +207,11 @@ function backend_write(backend::NCDatasetsBackend, uri::AbstractString,
     ds_file = NCDataset(path, exists ? "a" : "c"; format = fmt)
     try
         for (dim, d) in ds.dims
-            if !haskey(ds_file.dim, dim)
+            # `ds_file.dim` and `ds_file` are keyed by String, so the guard must pass one:
+            # `haskey(ds_file.dim, dim)` with `dim` a Symbol is false for a dimension that is
+            # already there, and redefining it makes netCDF-c fail with -42 ("name in use")
+            # on the second `geosave` to the same path.
+            if !haskey(ds_file.dim, string(dim))
                 defDim(ds_file, dim, d.is_unlimited ? Inf : d.size)
             end
             if d.coords !== nothing && !haskey(ds_file, string(dim))

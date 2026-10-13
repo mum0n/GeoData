@@ -121,10 +121,24 @@ function point_in_polygon(x::Real, y::Real, poly_lons::AbstractVector, poly_lats
 end
 
 """
+    _ring_named_tuple(name, code, coords) -> NamedTuple
+
+One coastline ring as `(name, code, lons, lats)`, from GeoInterface's coordinate
+representation. A ring is the first two coordinates of every point: a third is height, not
+position along a shoreline.
+"""
+function _ring_named_tuple(name, code, coords)
+    lons = Float64[Float64(pt[1]) for pt in coords]
+    lats = Float64[Float64(pt[2]) for pt in coords]
+    return (name = name, code = code, lons = lons, lats = lats)
+end
+
+"""
     load_coastline_polygons(filepath::AbstractString) -> Vector{NamedTuple}
 
 Load coastline rings from a GeoParquet file. Returns a vector of `NamedTuple`s with
-fields `(name, code, lons, lats)`, keeping every `LineString` feature.
+fields `(name, code, lons, lats)`, keeping every `LineString` feature, and every ring of a
+`MultiLineString`.
 
 Empty when the file is absent, so a caller without a coastline file gets "no rings"
 rather than a crash — which `is_point_on_land_geodata` treats as "unknown, not land".
@@ -144,19 +158,32 @@ function load_coastline_polygons(filepath::AbstractString)
         error("$(filepath) has no 'geometry' variable; it is not a coastline file. " *
               "Variables present: $(sort(collect(keys(ds.variables)))).")
 
+    # The geometry column comes back as well-known binary, and GeoInterface's traits read it
+    # directly -- the same idiom GeoData's own GeoParquet backend documents. The trait is what
+    # must be tested: `GeoInterface.LineString` is a *trait type*, not the concrete geometry,
+    # so `geom isa GeoInterface.LineString` is false for every feature and this function used
+    # to return no rings at all, for every file, without failing. A land mask that silently
+    # masks nothing is worse than one that errors.
+    geoms = ds.variables["geometry"].data
+    names = haskey(ds.variables, "name") ? ds.variables["name"].data : fill("", length(geoms))
+    codes = haskey(ds.variables, "code") ? ds.variables["code"].data : fill("unknown", length(geoms))
+
     polys = NamedTuple[]
-    for i in eachindex(ds.variables["geometry"].data)
-        geom = ds.variables["geometry"].data[i]
-        if geom isa GeoInterface.LineString
-            coords = collect(geom)
-            push!(polys, (
-                name = string(i in eachindex(ds.variables["name"].data) ?
-                              ds.variables["name"].data[i] : ""),
-                code = Symbol(i in eachindex(ds.variables["code"].data) ?
-                              ds.variables["code"].data[i] : "unknown"),
-                lons = Float64[pt[1] for pt in coords],
-                lats = Float64[pt[2] for pt in coords],
-            ))
+    for i in eachindex(geoms)
+        geom = geoms[i]
+        name = string(i in eachindex(names) ? names[i] : "")
+        code = Symbol(i in eachindex(codes) ? codes[i] : "unknown")
+
+        trait = GeoInterface.trait(geom)
+        if trait isa GeoInterface.LineStringTrait
+            push!(polys, _ring_named_tuple(name, code, GeoInterface.coordinates(geom)))
+        elseif trait isa GeoInterface.MultiLineStringTrait
+            # A MultiLineString is several shorelines in one feature, and `coordinates` nests
+            # one level for the parts, so each becomes its own ring: the land test needs one
+            # ring per curve. (GeoInterface 1.6 has no `geometries` accessor for this.)
+            for part in GeoInterface.coordinates(geom)
+                push!(polys, _ring_named_tuple(name, code, part))
+            end
         end
     end
     return polys

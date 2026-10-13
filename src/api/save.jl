@@ -10,9 +10,12 @@ export geosave
 Save a GeoDataset to a URI, auto-detecting the backend from the file extension or scheme
 when `backend` is not given.
 
-Writes into an existing store when one is present (variables and dimensions the
-destination already has are updated in place); pass `overwrite=true` to replace it
-instead.
+`overwrite=false` updates a destination that is already there, for the backends that can:
+NCDatasets opens the existing file in append mode, and a variable it already finds is
+replaced in place. Zarr cannot — Zarr.jl reopens an existing store read-only and refuses to
+create an array in a reopened group — so a second `geosave` to the same Zarr path is an error
+naming `overwrite=true` rather than a half-written store. Pass `overwrite=true` to replace
+the destination in both cases.
 
 # Arguments
 - `uri`: Destination path or URI

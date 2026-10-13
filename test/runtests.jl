@@ -507,6 +507,38 @@ end
             # An absent file yields no rings ("unknown"), documented, not a crash.
             @test isempty(load_coastline_polygons("C:/nope/nowhere.parquet"))
 
+            # A written coastline GeoParquet reads back as the rings it was given. The geometry
+            # column is well-known binary, and the reader must dispatch on GeoInterface's trait,
+            # not test `isa GeoInterface.LineString` -- that is a trait type, so the concrete
+            # check never matches and the function silently returned no rings for every file.
+            local scratch = test_scratch()
+            local ring_lons = [-60.0, -60.0, -59.0, -59.0, -60.0]
+            local ring_lats = [44.0, 45.0, 45.0, 44.0, 44.0]
+            local line = GeoInterface.LineString(
+                [(ring_lons[i], ring_lats[i]) for i in eachindex(ring_lons)])
+            local mls = GeoInterface.MultiLineString([
+                [(-60.0, 44.0), (-59.0, 45.0)],
+                [(-58.0, 44.0), (-57.0, 45.0)]])
+            local coast_path = joinpath(scratch, "coastline.parquet")
+            GeoParquet.write(coast_path,
+                             DataFrame(id = [1, 2], name = ["test ring", "two parts"],
+                                       code = ["test_ring", "two_parts"],
+                                       geometry = [line, mls]), (:geometry,))
+
+            local read_rings = load_coastline_polygons(coast_path)
+            # One LineString, plus each ring of the MultiLineString separately.
+            @test length(read_rings) == 3
+            @test read_rings[1].name == "test ring" && read_rings[1].code == :test_ring
+            @test read_rings[1].lons == ring_lons
+            @test read_rings[1].lats == ring_lats
+            @test read_rings[2].lons == [-60.0, -59.0] && read_rings[2].lats == [44.0, 45.0]
+            @test read_rings[3].lons == [-58.0, -57.0] && read_rings[3].lats == [44.0, 45.0]
+
+            # The point of reading rings: the closed one masks land, an open one does not.
+            @test is_point_on_land_geodata(-59.5, 44.5; coastline = [read_rings[1]])
+            @test !is_point_on_land_geodata(-58.5, 44.5; coastline = [read_rings[1]])
+            @test !is_point_on_land_geodata(-58.5, 44.5; coastline_file = coast_path)
+
             @test is_point_on_land_geodata(0.5, 0.5; coastline = rings)
             @test !is_point_on_land_geodata(9.9, 9.9; coastline = rings)
             @test !is_point_on_land_geodata(9.9, 9.9)      # no input: unknown, not land
@@ -554,4 +586,98 @@ end
             try rm(test_run_dir; recursive = true, force = true) catch end
         end
     end
+end
+
+# --------------------------------------------------------------------------------------
+#  What a notebook and a caller both depend on: append, profile, and listing.
+# --------------------------------------------------------------------------------------
+#
+#  These three are the seams that broke while every direct test stayed green. Each is
+#  exercised here the way a caller actually drives it, not through the helper below it:
+#  the Zarr path was exercised, the NetCDF append path was never exercised at all, and
+#  `geoprofile`/`geotimeseries` and the two storage listing functions had no caller to be
+#  wrong to.
+
+@testset "Appending a NetCDF save to an existing file" begin
+    # The append guard tested `haskey(ds_file.dim, dim)` with `dim` a Symbol, but
+    # `ds_file.dim` is keyed by String, so every dimension was redefined and netCDF-c
+    # failed with -42 ("name in use") on the second `geosave` to the same path.
+    scratch = test_scratch()
+    ds = make_3d_dataset([Float32(z + d) for x in 1:4, y in 1:3, (d, z) in enumerate(-2.0:-2.0:-6.0)],
+                         collect(1.0:4.0), collect(1.0:3.0), collect(-2.0:-2.0:-6.0), "temp")
+    path = joinpath(scratch, "append.nc")
+    geosave(path, ds; backend = :ncdatasets)
+    geosave(path, ds; backend = :ncdatasets)                       # must not raise
+    @test size(geoload(path; backend = :ncdatasets).variables["temp"].data) == size(ds.variables["temp"].data)
+
+    # A second variable, different name, joins the same file rather than replacing it.
+    ds2 = make_2d_dataset([Float32(1.0 * (x + y)) for x in 1:4, y in 1:3],
+                          collect(1.0:4.0), collect(1.0:3.0), "salt")
+    geosave(path, ds2; backend = :ncdatasets)
+    both = geoload(path; backend = :ncdatasets)
+    @test sort(collect(keys(both.variables))) == ["salt", "temp"]
+end
+
+@testset "Profile and timeseries pass only the axes a dataset has" begin
+    # `geoprofile` passed `time = 0.0` unconditionally, so a dataset with no time axis failed
+    # with "no coordinate for :time", and `geotimeseries` did the same with `depth`. The
+    # default is now `nothing`: an axis is passed when the dataset has one, and an axis
+    # requested explicitly for a dataset that lacks it is an error rather than ignored.
+    ds = make_3d_dataset([Float32(x + y + d) for x in 1:5, y in 1:4, d in 1:3],
+                         collect(1.0:5.0), collect(1.0:4.0), collect(-5.0:-5.0:-15.0), "temp")
+    prof = geoprofile(ds, ["temp"]; lon = 3.0, lat = 2.0)
+    @test length(prof[:depth]) == 3
+    @test length(prof["temp"]) == 3
+    @test_throws ErrorException geoprofile(ds, ["temp"]; lon = 3.0, lat = 2.0, time = 0.0)
+
+    # A time-axis dataset answers a timeseries, and a profile on it defaults to the first step.
+    crs = GeoData.CoordinateSystem(crs = "EPSG:4326")
+    dl = Dimension(name = :lon, size = 5, coords = collect(1.0:5.0), units = "degrees_east",
+                   dim_type = DIM_SPATIAL)
+    dla = Dimension(name = :lat, size = 4, coords = collect(1.0:4.0), units = "degrees_north",
+                    dim_type = DIM_SPATIAL)
+    dd = Dimension(name = :depth, size = 3, coords = collect(-5.0:-5.0:-15.0), units = "m",
+                   dim_type = DIM_PARAMETRIC)
+    dt = Dimension(name = :time, size = 2, coords = [0.0, 30.0], units = "days",
+                   dim_type = DIM_TEMPORAL)
+    tds = GeoDataset(
+        Dict("temp" => GeoArray(
+            Float32[x + y + d + t for x in 1:5, y in 1:4, d in 1:3, t in 1:2],
+            (dl, dla, dd, dt), crs, Dict{String, Any}())),
+        Dict(:lon => GeoArray(collect(1.0:5.0), (dl,), crs, Dict{String, Any}()),
+             :lat => GeoArray(collect(1.0:4.0), (dla,), crs, Dict{String, Any}()),
+             :depth => GeoArray(collect(-5.0:-5.0:-15.0), (dd,), crs, Dict{String, Any}()),
+             :time => GeoArray([0.0, 30.0], (dt,), crs, Dict{String, Any}())),
+        Dict(:lon => dl, :lat => dla, :depth => dd, :time => dt), crs, Dict{String, Any}(),
+        nothing, "synthetic")
+
+    ts = geotimeseries(tds, ["temp"]; lon = 3.0, lat = 2.0)
+    @test ts[:time] == [0.0, 30.0]
+    @test length(ts["temp"]) == 2
+    # depth defaults to the first value, and an explicit one is honoured.
+    ts_d = geotimeseries(tds, ["temp"]; lon = 3.0, lat = 2.0, depth = -10.0)
+    @test ts_d["temp"] ≠ ts["temp"]
+end
+
+@testset "GeoStorage listing returns groups and variables, and reads keep their shape" begin
+    # `list_storage_groups` and `list_storage_variables` were exported but never defined,
+    # and `read_storage_variable` used `cur[:]`, which flattens a matrix to a vector.
+    scratch = test_scratch()
+    store = open_geostorage(joinpath(scratch, "store.zarr"))
+    create_storage_group(store, "inputs")
+    create_storage_group(store, "inputs/nested")
+    m = [Float32(1.0 * (x + y)) for x in 1:7, y in 1:5]
+    write_storage_variable!(store, "inputs/elevation", m)
+    write_storage_variable!(store, "inputs/lon", Float64.(1.0:7.0))
+
+    @test list_storage_groups(store) == ["inputs"]
+    @test list_storage_groups(store; group_path = "inputs") == ["nested"]
+    @test list_storage_groups(store; group_path = "absent") == String[]
+    @test list_storage_variables(store) == String[]
+    @test list_storage_variables(store; group = "inputs") == ["elevation", "lon"]
+
+    back = read_storage_variable(store, "inputs/elevation")
+    @test size(back) == size(m)
+    @test vec(back) == vec(m)
+    close_geostorage(store)
 end

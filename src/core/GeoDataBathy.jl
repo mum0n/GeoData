@@ -24,12 +24,15 @@ Smooth a bathymetry field and floor the water depth at `h_min`.
 
 Each pass blends every interior cell toward the weighted mean of its 3x3 neighbourhood
 (centre weight 4, edge-adjacent 1, corners 1) by the factor `alpha`. Boundaries are left
-untouched, so a land boundary does not bleed into the domain. A final clamp raises every
-cell to at least `h_min`, which is what makes a field traversable by a model whose
-minimum water depth is not zero.
+untouched, so a land boundary does not bleed into the domain. A final floor deepens every
+wet cell to at least `h_min` of water, which is what makes a field traversable by a model
+whose minimum water depth is not zero.
+
+# Convention
+`field` is elevation-positive-up: positive is land, negative is water, and dry land is `0`.
 
 # Arguments
-- `field`: bathymetry shaped `(lon, lat)`, in metres, positive up or down as given
+- `field`: bathymetry shaped `(lon, lat)`, in metres, positive up (positive is land)
 - `passes`: smoothing iterations
 - `alpha`: blend factor per pass, 0 = unchanged, 1 = full replacement
 - `h_min`: minimum water depth in metres (0 disables the floor)
@@ -51,7 +54,16 @@ function smooth_bathymetry(field::AbstractMatrix; passes::Integer = 4, alpha::Re
     end
 
     if h_min > 0.0
-        smoothed = max.(smoothed, Float64(h_min))
+        # `h_min` is a minimum *water depth*, and the field is elevation-positive-up, so a wet
+        # cell's seabed must sit no higher than `-h_min`: deeper, not higher. Writing the
+        # floor the other way (`max.(h, h_min)`) raised every wet cell to `+h_min` of dry
+        # land, which is how an entire domain silently became land and the flow went still.
+        #
+        # Only water is floored, and a shoal is deepened to `-h_min` while a deep column keeps
+        # its depth, which is why it is `min` and not `max`. Dry land is `0` in this
+        # convention, and a cell that is already at or above sea level stays land rather than
+        # being cut down into an ocean that is not there.
+        smoothed = ifelse.(smoothed .< 0, min.(smoothed, -Float64(h_min)), 0.0)
     end
     return smoothed
 end

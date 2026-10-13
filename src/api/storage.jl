@@ -234,6 +234,72 @@ function write_storage_variable!(
 end
 
 """
+    _storage_zarr_group(storage, group_path) -> Union{Zarr.ZGroup, Nothing}
+
+Walk to `group_path` from the store's root, creating nothing, and return the group there, or
+`nothing` when any component of the path is absent. The two listing functions share it because
+the walk is one decision spelled two ways otherwise, and `create_storage_group` and
+`has_storage_group` each carry their own copy of the same steps.
+"""
+function _storage_zarr_group(storage::GeoStorage, group_path::AbstractString)
+    cur = storage.handle
+    for p in split(replace(group_path, "\\" => "/"), "/")
+        s = String(p)
+        isempty(s) && continue
+        haskey(cur, s) || return nothing
+        cur = cur[s]
+    end
+    return cur
+end
+
+"""
+    list_storage_groups(storage::GeoStorage; group_path::AbstractString = "") -> Vector{String}
+
+The group names one level below `group_path`, sorted. An empty `group_path` asks about the
+store's root.
+
+Both functions here and `list_storage_variables` were exported before they existed: importing
+either raised `UndefVarError`, and nothing caught it because no test and no caller used them.
+A store that cannot be listed cannot be inspected after the fact, which is the whole point of
+the grouped layout.
+"""
+function list_storage_groups(storage::GeoStorage; group_path::AbstractString = "")
+    if storage.backend == :zarr
+        grp = _storage_zarr_group(storage, group_path)
+        grp === nothing && return String[]      # a path that is not there has no groups
+        return sort(String.(collect(keys(grp.groups))))
+    elseif storage.backend == :geoparquet
+        # A group is a directory under the storage root; a nested path is relative to it.
+        base = isempty(group_path) ? dirname(storage.uri) :
+               joinpath(dirname(storage.uri), group_path)
+        isdir(base) || return String[]
+        return sort([String(d) for d in readdir(base) if isdir(joinpath(base, d))])
+    end
+    return String[]
+end
+
+"""
+    list_storage_variables(storage::GeoStorage; group::AbstractString = "") -> Vector{String}
+
+The variable names written directly inside `group`, sorted, without the path prefix. An empty
+`group` asks about the store's root. A variable in a nested group is listed by naming that group.
+"""
+function list_storage_variables(storage::GeoStorage; group::AbstractString = "")
+    if storage.backend == :zarr
+        grp = _storage_zarr_group(storage, group)
+        grp === nothing && return String[]      # a path that is not there has no variables
+        return sort(String.(collect(keys(grp.arrays))))
+    elseif storage.backend == :geoparquet
+        base = isempty(group) ? dirname(storage.uri) :
+               joinpath(dirname(storage.uri), group)
+        isdir(base) || return String[]
+        return sort([String(replace(f, ".parquet" => "")) for f in readdir(base)
+                     if f isa String && endswith(String(f), ".parquet")])
+    end
+    return String[]
+end
+
+"""
     read_storage_variable(storage::GeoStorage, var_path::AbstractString)
 
 Read an array or tabular dataset from `storage` at `var_path`.
@@ -247,7 +313,10 @@ function read_storage_variable(storage::GeoStorage, var_path::AbstractString)
             isempty(s) && continue
             cur = cur[s]
         end
-        return cur[:]
+        # `cur[:]` flattens a multi-dimensional array to a vector. Index by range per axis
+        # instead: a 7x5 field read back as 35 numbers has lost the shape that was written,
+        # and the caller cannot tell that from the values.
+        return cur[ntuple(i -> 1:size(cur, i), ndims(cur))...]
     elseif storage.backend == :geoparquet
         target_file = if endswith(var_path, ".parquet")
             joinpath(dirname(storage.uri), var_path)
