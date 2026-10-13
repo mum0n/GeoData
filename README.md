@@ -147,5 +147,5 @@ A dataset that fails these is a bug, not a style problem.
 
 ## Related
 
-- [`GeoDataSources.md`](GeoDataSources.md) — fetching, provenance, the source registry,
+- [`GeoDataSources.md`](../GeoDataSources/README.md) — fetching, provenance, the source registry,
   the catalog, and the data-cube engine. 

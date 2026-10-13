@@ -74,6 +74,15 @@ function axis(ds::GeoDataset, name::Symbol)
     if haskey(ds.coords, canonical)
         return vec(Float64.(ds.coords[canonical].data)), ds.dims[canonical]
     end
+    # A dimension that declares coords IS an axis. Producers are free to carry the
+    # coordinate values on the `Dimension` rather than also duplicating them as a
+    # coordinate `GeoArray` in `ds.coords`; without this fallback such a dataset (e.g.
+    # the benthic and ETOPO bathymetry products) declares a lon it then cannot read.
+    if haskey(ds.dims, canonical) &&
+       ds.dims[canonical].coords !== nothing &&
+       !isempty(ds.dims[canonical].coords)
+        return vec(Float64.(ds.dims[canonical].coords)), ds.dims[canonical]
+    end
     error("Dataset has no $(canonical) axis. It has: $(sort(collect(keys(ds.coords)))).")
 end
 

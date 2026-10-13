@@ -180,11 +180,23 @@ function backend_create(backend::NCDatasetsBackend, uri::AbstractString,
     return NCDataset(path, mode; format = fmt)
 end
 
+# NetCDF attributes hold numbers, strings, chars and arrays of those -- but there is no
+# NetCDF `Bool`, and NCDatasets maps an attribute value's *type* to an `nc_type`, so writing
+# a `Bool` (or a `Symbol`, tuple, or dict) raises `KeyError(:Bool)` and aborts the whole
+# write. A producer is free to attach such metadata, so coerce it here, generically, rather
+# than requiring every caller to know what NCDatasets cannot serialise.
+_nc_attrib_value(v::Bool) = string(v)
+_nc_attrib_value(v::Symbol) = string(v)
+_nc_attrib_value(v::Union{Tuple, AbstractDict}) = string(v)
+_nc_attrib_value(v::AbstractVector{Bool}) = string.(v)
+_nc_attrib_value(v::AbstractVector{Symbol}) = string.(v)
+_nc_attrib_value(v) = v
+
 function backend_write(backend::NCDatasetsBackend, uri::AbstractString,
                        ds::GeoDataset; kwargs...)
     path = strip_scheme(uri)
     fmt = something(haskey(kwargs, :format) ? kwargs[:format] : nothing,
-                    _default_format(backend))
+                     _default_format(backend))
     overwrite = get(kwargs, :overwrite, false)
     exists = isfile(path)
     if exists && overwrite
@@ -210,13 +222,14 @@ function backend_write(backend::NCDatasetsBackend, uri::AbstractString,
             axes = [dimension_name(ga, i) for i in 1:length(sz)]
             check_declared_dims(sz, axes, ds.dims)
             if !haskey(ds_file, name)
-                defVar(ds_file, name, eltype(ga.data), tuple(axes...); attrib = ga.attrs)
+                var_attrib = Dict(k => _nc_attrib_value(v) for (k, v) in ga.attrs)
+                defVar(ds_file, name, eltype(ga.data), tuple(axes...); attrib = var_attrib)
             end
             ds_file[name][ntuple(_ -> Colon(), ndims(ga))...] = ga.data
         end
 
         for (k, v) in ds.attrs
-            ds_file.attrib[k] = v
+            ds_file.attrib[k] = _nc_attrib_value(v)
         end
     finally
         close(ds_file)
