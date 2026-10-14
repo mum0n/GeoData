@@ -136,15 +136,13 @@ function _declared_dimensions(record)
         name === nothing && continue
         size_ = haskey(entry, "size") ? Int(entry["size"]) : 0
         size_ > 0 || continue
-        units = something(get(entry, "units", nothing), nothing)
-        std = something(get(entry, "standard_name", nothing), nothing)
-        dim_type = something(get(entry, "dim_type", nothing), nothing)
-        coords = something(get(entry, "coords", nothing), nothing)
-        has = !isnothing(coords)
+        coords = get(entry, "coords", nothing)
         push!(out, name => Dimension(name = name, size = size_,
-                                     coords = has ? collect(Float64, coords) : nothing,
-                                     units = units, standard_name = std,
-                                     dim_type = dim_type))
+                                     coords = coords === nothing ? nothing :
+                                              collect(Float64, coords),
+                                     units = get(entry, "units", nothing),
+                                     standard_name = get(entry, "standard_name", nothing),
+                                     dim_type = get(entry, "dim_type", nothing)))
     end
     return out
 end
