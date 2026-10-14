@@ -72,7 +72,28 @@ function backend_open(backend::ZarrBackend, uri::AbstractString; kwargs...)
     crs = CoordinateSystem(crs = something(get(g.attrs, "crs", nothing), "EPSG:4326"))
     coords = Dict{Symbol, GeoArray}()
     dims = Dict{Symbol, Dimension}()
+
+    # A store that declared its dimensions carries them, and they win. The name heuristic
+    # below can only recognise the geographical axes -- lon/lat/depth/time/x/y/z -- so a
+    # store holding anything else (spatial units, ensemble draws, a month index) would have
+    # its axes read back as data variables, and a reader would have to know by hand that
+    # "auids" is the spatial axis. `backend_write` records the dimensions the dataset
+    # declared, so the store describes itself.
+    declared = _declared_dimensions(get(g.attrs, "dimensions", nothing))
+    for (name, d) in declared
+        dims[name] = d
+        if d.coords !== nothing
+            obj = get(g.arrays, string(name), nothing)
+            c = obj === nothing ? nothing : collect(Float64, vec(obj[:]))
+            d = Dimension(name = d.name, size = d.size, coords = c, units = d.units,
+                          standard_name = d.standard_name, dim_type = d.dim_type)
+            dims[name] = d
+            coords[name] = GeoArray(c, (d,), crs, Dict{String, Any}())
+        end
+    end
+
     for k in coord_names
+        haskey(dims, standardize_dimension_name(Symbol(k))) && continue
         obj = g.arrays[k]
         canon = standardize_dimension_name(Symbol(k))
         c = collect(Float64, vec(obj[:]))
@@ -86,12 +107,46 @@ function backend_open(backend::ZarrBackend, uri::AbstractString; kwargs...)
 
     vars = Dict{String, GeoArray}()
     for k in data_names
+        haskey(dims, Symbol(k)) && continue
         obj = g.arrays[k]
         vars[k] = GeoArray(obj, _zarr_dims_to_tuple(size(obj), dims, coords), crs,
                            Dict(obj.attrs))
     end
 
     return GeoDataset(vars, coords, dims, crs, Dict(g.attrs), ZarrBackend(), path)
+end
+
+"""
+    _declared_dimensions(record) -> Vector{Pair{Symbol, Dimension}}
+
+The dimension records a store wrote into its group attributes, as `Dimension`s, or empty.
+
+The record is what `backend_write` wrote: a vector of dictionaries with `name`, `size`,
+`units`, `standard_name` and `dim_type`, plus `coords` when the dimension had a coordinate
+array. Anything that does not parse is dropped rather than guessed at — a dimension named
+wrongly is a dimension a reader indexes wrongly, and the fallback heuristic covers the
+geographical axes anyway.
+"""
+function _declared_dimensions(record)
+    out = Pair{Symbol, Dimension}[]
+    record isa AbstractVector || return out
+    for entry in record
+        entry isa AbstractDict || continue
+        name = haskey(entry, "name") ? Symbol(entry["name"]) : nothing
+        name === nothing && continue
+        size_ = haskey(entry, "size") ? Int(entry["size"]) : 0
+        size_ > 0 || continue
+        units = something(get(entry, "units", nothing), nothing)
+        std = something(get(entry, "standard_name", nothing), nothing)
+        dim_type = something(get(entry, "dim_type", nothing), nothing)
+        coords = something(get(entry, "coords", nothing), nothing)
+        has = !isnothing(coords)
+        push!(out, name => Dimension(name = name, size = size_,
+                                     coords = has ? collect(Float64, coords) : nothing,
+                                     units = units, standard_name = std,
+                                     dim_type = dim_type))
+    end
+    return out
 end
 
 function backend_create(backend::ZarrBackend, uri::AbstractString,
@@ -105,6 +160,35 @@ function backend_create(backend::ZarrBackend, uri::AbstractString,
     end
     return zgroup(path; attrs = get(kwargs, :attrs, Dict{String, Any}()))
 end
+"""
+    _dimension_record(dims) -> Dict{String, Any}
+
+The dataset's dimensions, as a record `backend_open` can read back.
+
+A Zarr array's `.zarray` carries its shape, so the *existence* of an axis survives without
+this; what does not survive is which axis is which, because the reader's only alternative is
+to recognise a coordinate array by its name — and only the geographical names are
+recognisable. A dataset whose axes are `unit`/`month`/`draw` would come back with those as
+data variables, so the reader would have to know by hand which array is the spatial axis.
+Recording them makes the store self-describing, and an older store without the record falls
+back to the name heuristic.
+"""
+function _dimension_record(dims::Dict{Symbol, <:Dimension})::Dict{String, Any}
+    isempty(dims) && return Dict{String, Any}()
+    return Dict{String, Any}(
+        "dimensions" => [Dict{String, Any}(
+            "name" => string(d.name),
+            "size" => d.size,
+            # Written as the field itself rather than `something(field, nothing)`, which
+            # throws when the field *is* nothing.
+            "units" => d.units,
+            "standard_name" => d.standard_name,
+            "dim_type" => d.dim_type,
+            "coords" => d.coords === nothing ? nothing : collect(Float64, d.coords),
+        ) for d in values(dims)]
+    )
+end
+
 function backend_write(backend::ZarrBackend, uri::AbstractString,
                        ds::GeoDataset; kwargs...)
     path = strip_scheme(uri)
@@ -118,7 +202,8 @@ function backend_write(backend::ZarrBackend, uri::AbstractString,
             "another path.")
         rm(path; recursive = true)
     end
-    g = backend_create(backend, path, ds.dims; attrs = ds.attrs, overwrite = true)
+    g = backend_create(backend, path, ds.dims;
+                       attrs = merge(_dimension_record(ds.dims), ds.attrs), overwrite = true)
 
     # Dimensions first: coordinate arrays define the axes the variables are chunked on. A
     # dimension with no coordinate array is not an error: a Zarr array's `.zarray` carries its
