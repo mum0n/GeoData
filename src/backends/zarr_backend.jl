@@ -117,6 +117,20 @@ function backend_open(backend::ZarrBackend, uri::AbstractString; kwargs...)
 end
 
 """
+    _dimension_type(name) -> DimensionType
+
+The dimension type stored under `name`, or `DIM_GENERIC` if it names none. `DimensionType`
+is an enum, so only its name survives a JSON round trip.
+"""
+function _dimension_type(name)
+    s = name === nothing ? "" : string(name)
+    for t in instances(DimensionType)
+        string(t) == s && return t
+    end
+    return DIM_GENERIC
+end
+
+"""
     _declared_dimensions(record) -> Vector{Pair{Symbol, Dimension}}
 
 The dimension records a store wrote into its group attributes, as `Dimension`s, or empty.
@@ -142,7 +156,14 @@ function _declared_dimensions(record)
                                               collect(Float64, coords),
                                      units = get(entry, "units", nothing),
                                      standard_name = get(entry, "standard_name", nothing),
-                                     dim_type = get(entry, "dim_type", nothing)))
+                                     # `dim_type` is an enum, and an enum does not survive
+                                     # JSON as anything but its name. `DIM_` keeps the
+                                     # reader's terminology, and a name that does not match
+                                     # any of them is `DIM_GENERIC` rather than an error,
+                                     # because a wrong dimension *type* degrades a search
+                                     # and a wrong *name* indexes the wrong axis.
+                                     dim_type = _dimension_type(get(entry, "dim_type", nothing)),
+                                     calendar = get(entry, "calendar", nothing)))
     end
     return out
 end
