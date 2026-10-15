@@ -19,14 +19,20 @@ using Zarr
 struct ZarrBackend <: GeoBackend end
 
 """
-    _zarr_dims_to_tuple(var_shape, dims, coords) -> Tuple{Vararg{Dimension}}
+    _zarr_dims_to_tuple(var_shape, dims, coords, attrs=Dict()) -> Tuple{Vararg{Dimension}}
 
-Dimension records for a variable of shape `var_shape`, matched against the declared
-`dims` (or a 1-D coordinate array with the same name).
+Dimension records for a variable of shape `var_shape`, matched against explicit dimension
+attributes (`_ARRAY_DIMENSIONS`) if present, or inferred from `dims` and `coords`.
 """
 function _zarr_dims_to_tuple(var_shape, dims::Dict{Symbol, Dimension},
-                             coords::Dict{Symbol, GeoArray})
-    names = infer_dim_names_from_size(var_shape, dims)
+                             coords::Dict{Symbol, GeoArray},
+                             attrs::AbstractDict = Dict{String, Any}())
+    dim_attr = get(attrs, "_ARRAY_DIMENSIONS", nothing)
+    names = if dim_attr isa AbstractVector && length(dim_attr) == length(var_shape)
+        [standardize_dimension_name(Symbol(string(d))) for d in dim_attr]
+    else
+        infer_dim_names_from_size(var_shape, dims)
+    end
     refs = Dimension[]
     for i in 1:length(var_shape)
         name = names[i]
@@ -109,8 +115,8 @@ function backend_open(backend::ZarrBackend, uri::AbstractString; kwargs...)
     for k in data_names
         haskey(dims, Symbol(k)) && continue
         obj = g.arrays[k]
-        vars[k] = GeoArray(obj, _zarr_dims_to_tuple(size(obj), dims, coords), crs,
-                           Dict(obj.attrs))
+        vars[k] = GeoArray(obj, _zarr_dims_to_tuple(size(obj), dims, coords, obj.attrs),
+                           crs, Dict(obj.attrs))
     end
 
     return GeoDataset(vars, coords, dims, crs, Dict(g.attrs), ZarrBackend(), path)
@@ -194,18 +200,18 @@ back to the name heuristic.
 """
 function _dimension_record(dims::Dict{Symbol, <:Dimension})::Dict{String, Any}
     isempty(dims) && return Dict{String, Any}()
-    return Dict{String, Any}(
-        "dimensions" => [Dict{String, Any}(
-            "name" => string(d.name),
-            "size" => d.size,
-            # Written as the field itself rather than `something(field, nothing)`, which
-            # throws when the field *is* nothing.
-            "units" => d.units,
-            "standard_name" => d.standard_name,
-            "dim_type" => d.dim_type,
-            "coords" => d.coords === nothing ? nothing : collect(Float64, d.coords),
-        ) for d in values(dims)]
-    )
+    records = [Dict{String, Any}(
+        "name" => string(d.name),
+        "size" => d.size,
+        # Written as the field itself rather than `something(field, nothing)`, which
+        # throws when the field *is* nothing.
+        "units" => d.units,
+        "standard_name" => d.standard_name,
+        "dim_type" => d.dim_type,
+        "coords" => collect(Float64, d.coords),
+    ) for d in values(dims) if d.coords !== nothing]
+    isempty(records) && return Dict{String, Any}()
+    return Dict{String, Any}("dimensions" => records)
 end
 
 function backend_write(backend::ZarrBackend, uri::AbstractString,
@@ -250,8 +256,10 @@ function backend_write(backend::ZarrBackend, uri::AbstractString,
             push!(names, nm)
         end
         check_declared_dims(sz, names, ds.dims)
+        var_attrs = merge(Dict{String, Any}("_ARRAY_DIMENSIONS" => [string(nm) for nm in names]),
+                          ga.attrs)
         zcreate(eltype(ga.data), g, name, sz...;
-                chunks = default_chunks(sz), attrs = ga.attrs)
+                chunks = default_chunks(sz), attrs = var_attrs)
         g.arrays[name][:] = ga.data
     end
 

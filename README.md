@@ -99,8 +99,7 @@ infer_backend("nczarr://store") # :nczarr
 infer_backend("a.tif")          # ERROR: names the supported schemes and the `backend=` keyword
 ```
 
-A source URI's `scheme://` prefix is removed by `strip_scheme` — **not** by slicing an
-offset, which is how the `geoparquet://` off-by-one existed.
+A source URI's `scheme://` prefix is removed by `strip_scheme` using URI parsing.
 
 ### Writing
 
@@ -108,18 +107,17 @@ offset, which is how the `geoparquet://` off-by-one existed.
 `backend_write`.
 
 - NetCDF updates an existing file in place (mode `"a"`), adding or replacing variables.
-- Zarr **cannot** be updated in place: Zarr.jl reopens existing arrays read-only, so
-  `backend_write` says so instead of failing half-way through a write. Re-write the store
-  with `overwrite = true`, or choose another path.
-- `backend_create` validates that `dims` covers every axis of every variable, so a
-  destination that cannot describe its own contents is an error, not a guess.
+- Zarr datasets cannot be modified in place when reopened as read-only groups:
+  pass `overwrite = true` to recreate the store.
+- `backend_create` validates that `dims` covers every axis of every variable;
+  omitted dimensions raise an `ArgumentError` or `ErrorException`.
 
 ---
 
 ## 4. Hierarchical analytical storage (`GeoStorage`)
 
-For run archives, rather than datasets: a hierarchical Zarr or GeoParquet store with
-named groups.
+For simulation archives and multi-group experiments, `GeoStorage` manages hierarchical
+Zarr or GeoParquet group directories:
 
 ```julia
 storage = open_geostorage("work/run/archive.zarr")
@@ -129,21 +127,19 @@ arr2 = read_storage_variable(storage, "outputs", "temperature")
 close_geostorage(storage)
 ```
 
-`open_geostorage` on an existing store reads it; it does not truncate. Only
-`overwrite = true` replaces one.
+`open_geostorage` on an existing store opens it for inspection without truncation;
+pass `create = true` or `overwrite = true` to initialize or replace storage.
 
 ---
 
-## 5. Testing the contract
+## 5. Dataset Invariants
 
-Every dataset a test produces is checked with `assert_dataset_invariants`:
+Every dataset produced in testing is validated with `assert_dataset_invariants`:
 
-1. every variable's axis sizes match its dimension records;
-2. every dimension a variable spans is declared in `ds.dims`;
-3. every declared dimension is used by a variable or exists as a coordinate;
-4. every coordinate is 1-D with a dimension record of matching size.
-
-A dataset that fails these is a bug, not a style problem.
+1. Every variable axis length matches its corresponding `Dimension` record.
+2. Every dimension spanned by a variable is registered in `ds.dims`.
+3. Every declared dimension is referenced by a variable or defined as a coordinate.
+4. Every coordinate array is 1D with a matching dimension record.
 
 ## Related
 

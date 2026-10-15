@@ -14,6 +14,7 @@ using ..GeoDataBackends
 using LinearAlgebra
 using Statistics
 using SparseArrays
+using Interpolations
 
 export
     slice,
@@ -596,21 +597,17 @@ end
 
 function _interp1d(line::AbstractVector, src::Vector{Float64}, tgt::Vector{Float64})
     n = length(src)
-    out = similar(line, length(tgt))
-    for (j, t) in enumerate(tgt)
-        if t <= src[1]
-            out[j] = line[1]
-        elseif t >= src[end]
-            out[j] = line[end]
-        else
-            k = searchsortedlast(src, t)
-            k = clamp(k, 1, n-1)
-            dx = src[k+1] - src[k]
-            sx = dx == 0 ? 0.0 : (t - src[k]) / dx
-            out[j] = line[k] * (1-sx) + line[k+1] * sx
-        end
+    n == 0 && error("Source coordinate array for interpolation cannot be empty.")
+    if n == 1
+        return fill(line[1], length(tgt))
     end
-    return out
+    if !issorted(src)
+        error("Source coordinate array must be monotonically sorted for interpolation.")
+    end
+
+    y = collect(Float64, line)
+    itp = extrapolate(interpolate((src,), y, Gridded(Linear())), Flat())
+    return eltype(line)[itp(t) for t in tgt]
 end
 
 function _gather_dim(data, dim::Int, idxs::Vector{Int})

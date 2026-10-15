@@ -1,12 +1,10 @@
 """
-    bathymetry.jl (analysis)
+    bathymetry.jl
 
-Bathymetry analysis: continuous interpolators, smoothing, and marine-cell extraction.
+Continuous spatial interpolation, morphological smoothing, and marine grid cell
+extraction routines for bathymetric datasets.
 
-These are all pure array math over a `GeoDataset` the caller already has in hand. They
-belong in `GeoData` so a workflow can interrogate bathymetry without importing a package
-whose job is *downloading* it. The fetchers that produce the files stay in
-`GeoDataSources`.
+All calculations operate directly on in-memory array structures and `GeoDataset` containers.
 """
 
 using Interpolations
@@ -18,27 +16,45 @@ export smooth_bathymetry, get_bathymetry_interpolator, extract_marine_cells,
     sample_marine_cells
 
 """
-    smooth_bathymetry(field; passes=4, alpha=0.5, h_min=0.0) -> Matrix{Float64}
+    smooth_bathymetry(
+        field::AbstractMatrix;
+        passes::Integer = 4,
+        alpha::Real = 0.5,
+        h_min::Real = 0.0
+    ) -> Matrix{Float64}
 
-Smooth a bathymetry field and floor the water depth at `h_min`.
+Apply iterative weighted spatial smoothing to a 2D bathymetric elevation field and
+enforce an optional minimum water column depth threshold \$h_{\\min}\$.
 
-Each pass blends every interior cell toward the weighted mean of its 3x3 neighbourhood
-(centre weight 4, edge-adjacent 1, corners 1) by the factor `alpha`. Boundaries are left
-untouched, so a land boundary does not bleed into the domain. A final floor deepens every
-wet cell to at least `h_min` of water, which is what makes a field traversable by a model
-whose minimum water depth is not zero.
+In each smoothing iteration, interior cell values are updated via a 3x3 kernel:
+```math
+z_{i,j}^{(k+1)} = (1 - \\alpha) z_{i,j}^{(k)} + \\alpha \\bar{z}_{i,j}
+```
+where \$\\bar{z}_{i,j}\$ is computed with a center weight of 4 and adjacent weights of 1.
+Boundary cells remain unaltered.
 
-# Convention
-`field` is elevation-positive-up: positive is land, negative is water, and dry land is `0`.
+# Coordinate and Value Conventions
+`field` represents elevation in metres, oriented positive-up (terrestrial elevation \$> 0\$,
+water column elevation \$< 0\$, mean sea level \$= 0\$).
+
+When \$h_{\\min} > 0\$, submerged cells (\$z < 0\$) are bounded by \$\\min(z, -h_{\\min})\$.
+Subaerial cells (\$z \\ge 0\$) remain unaltered at 0.0 m.
 
 # Arguments
-- `field`: bathymetry shaped `(lon, lat)`, in metres, positive up (positive is land)
-- `passes`: smoothing iterations
-- `alpha`: blend factor per pass, 0 = unchanged, 1 = full replacement
-- `h_min`: minimum water depth in metres (0 disables the floor)
+- `field::AbstractMatrix`: 2D elevation grid with dimension ordering `(lon, lat)`.
+- `passes::Integer`: Number of smoothing iterations.
+- `alpha::Real`: Relaxation coefficient in \$[0, 1]\$.
+- `h_min::Real`: Minimum water depth threshold in metres (0.0 disables depth thresholding).
+
+# Returns
+- `Matrix{Float64}`: Smoothed elevation grid.
 """
-function smooth_bathymetry(field::AbstractMatrix; passes::Integer = 4, alpha::Real = 0.5,
-                           h_min::Real = 0.0)
+function smooth_bathymetry(
+    field::AbstractMatrix;
+    passes::Integer = 4,
+    alpha::Real = 0.5,
+    h_min::Real = 0.0
+)
     smoothed = Float64.(collect(field))
     n_lon, n_lat = size(smoothed)
     (n_lon < 3 || n_lat < 3) && return smoothed
@@ -54,74 +70,64 @@ function smooth_bathymetry(field::AbstractMatrix; passes::Integer = 4, alpha::Re
     end
 
     if h_min > 0.0
-        # `h_min` is a minimum *water depth*, and the field is elevation-positive-up, so a wet
-        # cell's seabed must sit no higher than `-h_min`: deeper, not higher. Writing the
-        # floor the other way (`max.(h, h_min)`) raised every wet cell to `+h_min` of dry
-        # land, which is how an entire domain silently became land and the flow went still.
-        #
-        # Only water is floored, and a shoal is deepened to `-h_min` while a deep column keeps
-        # its depth, which is why it is `min` and not `max`. Dry land is `0` in this
-        # convention, and a cell that is already at or above sea level stays land rather than
-        # being cut down into an ocean that is not there.
         smoothed = ifelse.(smoothed .< 0, min.(smoothed, -Float64(h_min)), 0.0)
     end
     return smoothed
 end
 
 """
-    get_bathymetry_interpolator(ds::GeoDataset; varname::AbstractString = "elevation") -> Function
+    get_bathymetry_interpolator(
+        ds::GeoDataset;
+        varname::AbstractString = "elevation"
+    ) -> Function
 
-Create a continuous `(lon, lat) -> elevation` interpolator from a bathymetry GeoDataset.
-
-Values outside the source domain are held at the nearest edge value (`Flat`
-extrapolation) rather than failing, so a query slightly outside the survey box still
-returns a real depth.
-
-The field's orientation is resolved from the dimensions the dataset declared, through
-`dim_permutation`, not from `size`: on a square grid both spellings of a pair have the same
-shape, and guessing from shape is how a transposed field stays silently misread.
+Construct a continuous bivariate interpolator `(lon, lat) -> elevation` from a `GeoDataset`.
+Domain extrapolation outside source coordinate bounds applies nearest-boundary flat values.
 
 # Arguments
-- `ds`: bathymetry GeoDataset
-- `varname`: the elevation variable to use, or a keyword prefix to search for
+- `ds::GeoDataset`: Bathymetric elevation dataset.
+- `varname::AbstractString`: Name of the elevation variable.
+
+# Returns
+- `Function`: Anonymous mapping `(lon::Real, lat::Real) -> Float64`.
 """
 function get_bathymetry_interpolator(ds::GeoDataset; varname::AbstractString = "elevation")
     elev_var = haskey(ds.variables, varname) ? varname :
-               variables_like(ds, ["elevation", "altitude", "z", "topo", "bedrock_altitude"])
+               first(variables_like(ds, ["elevation", "altitude", "z", "topo", "bedrock_altitude"]))
 
     elev_ga = ds.variables[elev_var]
     (lons, _) = axis(ds, :lon)
     (lats, _) = axis(ds, :lat)
 
-    # Orientation from the declared dimensions, not from `size`. A square grid has the same
-    # shape either way, so a size test cannot tell them apart and would read a transposed
-    # field as if it were upright.
     permutation = dim_permutation(elev_ga.dims, :lon, :lat)
     elevation = Array{Float64}(elev_ga.data)
     length(lons) == size(elevation, permutation[1]) || error(
-        "Variable $(repr(elev_var)) is $(size(elevation)) with declared dimensions " *
-        "$([d.name for d in elev_ga.dims]), but :lon has $(length(lons)) values. A field " *
-        "and the axis it is gridded on must agree.")
+        "Variable $(repr(elev_var)) has size $(size(elevation)) but longitude axis has " *
+        "$(length(lons)) elements.")
     length(lats) == size(elevation, permutation[2]) || error(
-        "Variable $(repr(elev_var)) is $(size(elevation)) with declared dimensions " *
-        "$([d.name for d in elev_ga.dims]), but :lat has $(length(lats)) values. A field " *
-        "and the axis it is gridded on must agree.")
+        "Variable $(repr(elev_var)) has size $(size(elevation)) but latitude axis has " *
+        "$(length(lats)) elements.")
 
     return get_bathymetry_interpolator(permutedims(elevation, permutation), lons, lats)
 end
 
 """
     get_bathymetry_interpolator(
-        elevation::AbstractMatrix, lon::AbstractVector, lat::AbstractVector
+        elevation::AbstractMatrix,
+        lon::AbstractVector,
+        lat::AbstractVector
     ) -> Function
 
-Create a continuous `(lon, lat) -> elevation` interpolator from raw arrays.
+Construct a continuous bivariate interpolator `(lon, lat) -> elevation` from numeric
+grid matrices and coordinate vectors.
 
-`elevation` must be shaped `(lon, lat)`; the `GeoDataset` method above resolves that
-orientation from declared dimensions and delegates here, so there is one implementation of
-the interpolation rather than one per caller. A caller that already holds arrays -- a run
-that has just fetched its bathymetry by source and range -- can use this directly without
-rebuilding a dataset to be read straight back apart.
+# Arguments
+- `elevation::AbstractMatrix`: 2D elevation grid structured as `(lon, lat)`.
+- `lon::AbstractVector`: Longitude axis coordinates in ascending order.
+- `lat::AbstractVector`: Latitude axis coordinates in ascending order.
+
+# Returns
+- `Function`: Evaluation function `(lon::Real, lat::Real) -> Float64`.
 """
 function get_bathymetry_interpolator(
     elevation::AbstractMatrix,
@@ -129,9 +135,8 @@ function get_bathymetry_interpolator(
     lat::AbstractVector
 )
     size(elevation) == (length(lon), length(lat)) || error(
-        "Elevation field is $(size(elevation)) but :lon has $(length(lon)) values and " *
-        ":lat has $(length(lat)). The field must be shaped (lon, lat); use " *
-        "`GeoData.bathymetry_arrays` to resolve a source's declared orientation first.")
+        "Elevation grid dimensions $(size(elevation)) must match coordinate lengths " *
+        "($(length(lon)), $(length(lat))).")
 
     itp = interpolate((collect(Float64, lon), collect(Float64, lat)),
                       Array{Float64}(elevation), Gridded(Linear()))
@@ -148,31 +153,24 @@ end
         coastlines::Union{Nothing, AbstractVector{<:NamedTuple}} = nothing
     ) -> NamedTuple
 
-Extract marine grid cells from a bathymetry dataset.
+Identify and extract submerged marine grid cells from a bathymetric dataset.
 
-Returns `(mask, indices, elevation, lons, lats)` where `mask` is a `BitMatrix` (true =
-water) of shape `(lat, lon)`, `indices` the linear cell indices of water cells, and
-`elevation`/`lons`/`lats` their values, row-major over latitude.
+Returns a named tuple `(mask, indices, elevation, lons, lats)` where `mask` is a `BitMatrix`
+(with dimension ordering `(lat, lon)`), `indices` contains `CartesianIndex{2}` coordinates
+of marine cells, and `elevation`/`lons`/`lats` hold their values.
 
-Two exclusions are applied, in order:
-
-1. **Depth** - a cell is water only if `z <= -max(0, min_seabed_depth)`, so a positive
-   `min_seabed_depth` requires at least that much water and zero admits sea level.
-2. **Land** - when `coastlines` is given, cells inside any ring are removed. Skip this
-   only if you have no land mask: it is what keeps a particle from spawning on a headland
-   that the gridded elevation rounds to zero.
-
-Orientation is read from the variable's own dimension records, not from `size`: on a square
-grid both spellings have the same shape, and guessing from size is how a transposed read
-stays silent. Descending axes are sorted, with the data permuted alongside them so a
-coordinate and the values it describes stay tied.
+Submerged cells are filtered by:
+1. Seabed elevation criterion: \$z_{\\text{bed}} \\le -\\max(0, h_{\\min})\$.
+2. Terrestrial polygon exclusion: cells intersecting closed coastline polygons are masked.
 
 # Arguments
-- `ds`: bathymetry GeoDataset
-- `elevation_var`: variable holding elevation (metres, positive down or up)
-- `min_seabed_depth`: minimum water depth to accept, in metres
-- `coastlines`: optional closed coastline rings, as returned by
-  `load_coastline_polygons`. Cells inside any ring are excluded by `_exclude_land!`
+- `ds::GeoDataset`: Bathymetry dataset.
+- `elevation_var::AbstractString`: Name of the elevation variable.
+- `min_seabed_depth::Real`: Minimum water column depth in metres.
+- `coastlines`: Optional collection of closed polygon boundary rings.
+
+# Returns
+- `NamedTuple`: Fields `(:mask, :indices, :elevation, :lons, :lats)`.
 """
 function extract_marine_cells(
     ds::GeoDataset;
@@ -183,34 +181,23 @@ function extract_marine_cells(
     ga = ds.variables[elevation_var]
     elev = Float64.(ga.data)
 
-    # Orientation is resolved from the variable's own dimension records, not inferred
-    # from `size`: on a square grid both spellings have the same shape, and guessing
-    # from size is how a transposed read stays silent. A 2-D field is the contract;
-    # anything else is refused rather than flattened.
     (pos_lat, pos_lon) = dim_permutation(ga.dims, :lat, :lon)
     if ndims(elev) != 2 || length(unique([pos_lat, pos_lon])) != 2 ||
        sort([pos_lat, pos_lon]) != collect(1:ndims(elev))
-        error("Variable $(repr(elevation_var)) is $(ndims(elev))-D with dims " *
-              "$([standardize_dimension_name(d.name) for d in ga.dims]). A 2-D field " *
-              "spanning :lon and :lat is what this function reads; anything else is " *
-              "refused rather than flattened.")
+        error("Variable $(repr(elevation_var)) has dimension count $(ndims(elev)) with dims " *
+              "$([standardize_dimension_name(d.name) for d in ga.dims]). A 2D field " *
+              "spanning :lon and :lat is required.")
     end
 
     (lons, _) = axis(ds, :lon)
     (lats, _) = axis(ds, :lat)
     if length(lons) != size(elev, pos_lon) || length(lats) != size(elev, pos_lat)
-        error("Variable $(repr(elevation_var)) is $(size(elev)) with dims " *
-              "$([standardize_dimension_name(d.name) for d in ga.dims]), but :lon has " *
-              "$(length(lons)) values and :lat has $(length(lats)). A dimension record and " *
-              "its coordinate vector must agree.")
+        error("Variable $(repr(elevation_var)) dimensions $(size(elev)) do not match " *
+              "axis lengths: :lon has $(length(lons)) and :lat has $(length(lats)).")
     end
 
-    # One canonical orientation for everything downstream: (lat, lon).
     elev_t = permutedims(elev, (pos_lat, pos_lon))
 
-    # Sort both axes, permuting the data with them so a coordinate and the values it
-    # describes stay tied. Sorting the axes alone would leave `elev_t` describing the
-    # old order, which is the wrong answer delivered quietly.
     p_lon = sortperm(lons)
     p_lat = sortperm(lats)
     lons = lons[p_lon]
@@ -251,18 +238,14 @@ end
 """
     _exclude_land!(mask, lons, lats, coastlines) -> BitMatrix
 
-Clear `mask` inside each coastline ring, in place.
-
-`mask` is `(lat, lon)` and `lons`/`lats` are ascending, both call-sorted together with the
-data they index. Each ring's bounding box becomes an index range by binary search, so only
-the cells that could be inside a ring get the ray-cast, rather than every cell against every
-ring: the cost is the number of cells a ring could contain, not cells x rings x vertices.
-
-Rings that are not closed are skipped. Ray-casting an open LineString reports land for the
-half-plane it faces, which is a wrong answer delivered confidently.
+Mask grid cells inside terrestrial boundary polygon rings in place.
 """
-function _exclude_land!(mask::BitMatrix, lons::Vector{Float64}, lats::Vector{Float64},
-                        coastlines::AbstractVector{<:NamedTuple})
+function _exclude_land!(
+    mask::BitMatrix,
+    lons::Vector{Float64},
+    lats::Vector{Float64},
+    coastlines::AbstractVector{<:NamedTuple}
+)
     for poly in coastlines
         (poly.lons[begin] == poly.lons[end] && poly.lats[begin] == poly.lats[end]) || continue
         i0 = max(1, searchsortedfirst(lons, minimum(poly.lons)))
@@ -285,26 +268,27 @@ end
         elevation_var::AbstractString = "elevation",
         min_seabed_depth::Real = 0.0,
         jitter_scale::Real = 0.5,
-        rng::AbstractRNG = Random.default_rng()
+        rng::AbstractRNG = Random.default_rng(),
+        coastlines::Union{Nothing, AbstractVector{<:NamedTuple}} = nothing
     ) -> NamedTuple{(:lons, :lats, :depths), Tuple{Vector{Float64}, Vector{Float64}, Vector{Float64}}}
 
-Sample `n_samples` coordinates from the marine cells of a bathymetry dataset, weighted
-by seabed depth magnitude, with a uniform positional jitter inside each cell.
+Sample `n_samples` spatial locations from submerged marine cells weighted proportionally
+to absolute bathymetric depth \$|z_{\\text{bed}}|\$, with uniform intra-cell perturbation.
 
-The weighted sampling is not rejection sampling: cells are drawn directly from the
-normalised depth profile via inverse-CDF sampling, so the result is exactly `n_samples`
-points with no retry loop and no dependence on the acceptance rate.
+Sampling follows an inverse transform sampling approach over normalized cumulative cell
+weights. Intra-cell coordinates are perturbed within \$\\pm 0.5 \\times \\text{jitter\\_scale} \\times \\Delta\$.
 
 # Arguments
-- `n_samples`: number of coordinates to draw
-- `bathymetry_ds`: bathymetry GeoDataset to sample from
-- `elevation_var`: variable holding elevation
-- `min_seabed_depth`: minimum water depth to accept, in metres
-- `jitter_scale`: positional jitter as a fraction of local grid spacing, in `[0, 1]`
-- `rng`: random generator
-- `coastlines`: optional coastline rings, forwarded to `extract_marine_cells`; pass these
-  for the same reason `extract_marine_cells` does, so a particle is not drawn onto a
-  headland the gridded elevation rounds to sea level
+- `n_samples::Int`: Number of spatial coordinates to sample.
+- `bathymetry_ds::GeoDataset`: Bathymetry elevation dataset.
+- `elevation_var::AbstractString`: Name of the elevation variable.
+- `min_seabed_depth::Real`: Minimum depth threshold in metres.
+- `jitter_scale::Real`: Perturbation scale factor in \$[0, 1]\$.
+- `rng::AbstractRNG`: Random number generator.
+- `coastlines`: Optional collection of coastline boundary polygons.
+
+# Returns
+- `NamedTuple`: Fields `(:lons, :lats, :depths)`.
 """
 function sample_marine_cells(
     n_samples::Int;
@@ -315,11 +299,15 @@ function sample_marine_cells(
     rng::AbstractRNG = Random.default_rng(),
     coastlines::Union{Nothing, AbstractVector{<:NamedTuple}} = nothing
 )
-    marine = extract_marine_cells(bathymetry_ds; elevation_var = elevation_var,
-                                  min_seabed_depth = min_seabed_depth, coastlines = coastlines)
-    isempty(marine.indices) && error("No marine cells found in the provided bathymetry. " *
-                                     "With no water cells the depth threshold, the `$(elevation_var)` " *
-                                     "variable, or a coastline ring excluding everything are the likely causes.")
+    marine = extract_marine_cells(
+        bathymetry_ds;
+        elevation_var = elevation_var,
+        min_seabed_depth = min_seabed_depth,
+        coastlines = coastlines
+    )
+    isempty(marine.indices) && error(
+        "No marine cells found matching elevation variable '$(elevation_var)' " *
+        "and minimum depth threshold $(min_seabed_depth) m.")
 
     weights = abs.(marine.elevation)
     weights_sum = sum(weights)
@@ -329,8 +317,6 @@ function sample_marine_cells(
     end
     cum_weights = cumsum(weights ./ weights_sum)
 
-    # Local grid spacing, for a jitter that stays inside the cell rather than jumping
-    # into a neighbour when the grid is irregular.
     lons = marine.lons
     lats = marine.lats
     d_lon = _axis_spacing(lons)
@@ -340,11 +326,16 @@ function sample_marine_cells(
     lats_out = Float64[]
     depths_out = Float64[]
 
+    n_cells = length(marine.elevation)
     for _ in 1:n_samples
         u = rand(rng)
         idx = searchsortedfirst(cum_weights, u)
-        idx > length(cum_weights) && (idx = length(cum_weights))
-        idx = clamp(idx, 1, length(marine.elevation))
+        if idx > length(cum_weights)
+            idx = length(cum_weights)
+        end
+        if idx < 1 || idx > n_cells
+            error("Sampled linear index $idx is outside valid range [1, $n_cells].")
+        end
 
         lon = marine.lons[idx] + (2 * rand(rng) - 1) * 0.5 * jitter_scale * d_lon
         lat = marine.lats[idx] + (2 * rand(rng) - 1) * 0.5 * jitter_scale * d_lat
@@ -359,9 +350,8 @@ end
 """
     _axis_spacing(coords::Vector{Float64}) -> Float64
 
-The local grid spacing of a coordinate axis: the smallest gap between consecutive
-values. Falls back to 1.0 for an axis with fewer than two values, which is the
-dimensionless case and keeps jitter harmless.
+Compute the minimum non-zero step between adjacent coordinate values.
+Returns 1.0 if fewer than two distinct coordinate values are present.
 """
 function _axis_spacing(coords::Vector{Float64})
     length(coords) < 2 && return 1.0

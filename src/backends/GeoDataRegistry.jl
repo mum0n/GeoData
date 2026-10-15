@@ -44,6 +44,10 @@ Infer the backend from a URI scheme or file extension.
 Throws when the URI does not identify a backend: a silent default hides a typo in a path.
 """
 function infer_backend(uri::AbstractString)
+    clean_p = replace(string(uri), r"^[a-zA-Z0-9]+://" => "")
+    if isdir(clean_p) && (isfile(joinpath(clean_p, ".zgroup")) || isfile(joinpath(clean_p, ".zattrs")) || isfile(joinpath(clean_p, ".zarray")))
+        return :zarr
+    end
     u = lowercase(string(uri))
     startswith(u, "nczarr://") && return :nczarr
     endswith(u, ".zarr") && return :zarr

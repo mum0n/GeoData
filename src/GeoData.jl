@@ -3,90 +3,69 @@
 
 Backend-agnostic geospatial data access layer.
 
-Provides a uniform interface for loading, saving, querying, slicing, indexing, and joining
-geospatial data across multiple backends (Zarr, GeoParquet, NetCDF, etc.).
+Provides a unified interface for loading, saving, querying, slicing, indexing, and joining
+geospatial datasets across multiple storage backends (Zarr, GeoParquet, NetCDF, etc.).
 
 # Design Principles
 
-- **Backend-agnostic**: Same code works with any supported backend
-- **Composable**: Operations chain naturally (load → slice → query → save)
-- **Lazy where the format allows it**: the Zarr backend keeps its chunked arrays as the
-  dataset's data, so opening a store reads nothing and indexing materialises only the
-  elements it touches; NetCDF and GeoParquet materialise on open, because their Julia
-  readers do
-- **Coordinate-aware**: Understands lon/lat/depth/time dimensions and CRS
-- **Extensible**: New backends via the `GeoBackend` interface
-- **Explicit failure**: An unknown backend, URI, dimension, or missing coordinate is an error,
-  never a silent default
+- **Backend-Agnostic**: Identical functional API across supported storage formats.
+- **Composable**: Functional operations compose directly (`geoload` → `geoslice` → `geovalues` → `geosave`).
+- **Lazy Evaluation**: Where supported by the backend (e.g. Zarr), chunked arrays are
+  maintained lazily without premature memory materialization.
+- **Coordinate-Aware**: Preserves dimension semantics (longitude, latitude, depth, time)
+  and Coordinate Reference Systems (CRS).
+- **Explicit Failure**: Missing coordinate metadata, unsupported formats, or dimension
+  mismatches raise informative errors rather than silently coercing defaults.
 
 # Quick Start
 
 ```julia
 using GeoData
 
-# Load from any backend (auto-detected from path/URI)
+# Load from backend (inferred from URI scheme or extension)
 ds = geoload("data/temperature.zarr")
 
-# Slice by coordinate ranges
-ds_slice = geoslice(ds, lon=(-70, -55), lat=(40, 50), depth=(0, 100))
+# Slice by coordinate intervals
+ds_slice = geoslice(ds, lon=(-70.0, -55.0), lat=(40.0, 50.0), depth=(0.0, 100.0))
 
-# Query at specific points
+# Query at specific coordinates
 vals = geovalues(ds_slice, lon=-65.0, lat=45.0, depth=50.0)
 
-# Save to any backend
+# Save to destination backend
 geosave("output/temperature_subset.zarr", ds_slice)
 ```
 
 # Supported Backends
 
-| Backend | Package | URI Scheme | Strengths |
-|---------|---------|------------|-----------|
-| Zarr | `Zarr.jl` | `zarr://`, `.zarr` | Chunked, compressed, cloud-native |
-| NetCDF/Zarr | `NCDatasets.jl` | `nczarr://`, `.nc` | CF conventions, interoperability |
-| GeoParquet | `GeoParquet.jl` | `geoparquet://`, `.parquet` | Vector/tabular, Arrow ecosystem |
-| NetCDF | `NCDatasets.jl` | `netcdf://`, `.nc` | Classic, CF-compliant |
-
-# Core Operations
-
-- `geoload(uri; backend, kwargs...)` - Load dataset
-- `geosave(uri, data; backend, kwargs...)` - Save dataset
-- `geoslice(data; dims...)` - Slice by coordinate ranges
-- `geoselect(data; dims...)` - Select by coordinate values
-- `geovalues(data; dims...)` - Interpolate/query at points
-- `geojoin(datasets...; on, how)` - Join datasets
-- `geoaggregate(ds; dim, func)` - Reduce along a dimension (mean, maximum, ...)
-- `geoindex(data; dims...)` - Build spatial/temporal index
-- `georegrid(data, target_grid; method)` - Regrid/interpolate
+| Backend | Package | URI Scheme | Features |
+|---------|---------|------------|----------|
+| Zarr | `Zarr.jl` | `zarr://`, `.zarr` | Chunked, compressed, cloud-native storage |
+| NetCDF/Zarr | `NCDatasets.jl` | `nczarr://`, `.nc` | CF-compliant Zarr mapping |
+| GeoParquet | `GeoParquet.jl` | `geoparquet://`, `.parquet` | Columnar vector/tabular geometry |
+| NetCDF | `NCDatasets.jl` | `netcdf://`, `.nc` | Standard CF-compliant NetCDF4 |
 """
 module GeoData
 
 using Reexport
 
-# Core types and interfaces - include first to define submodules
-    # Core types and the backend contract: included first to define the submodules.
-    include("core/GeoDataTypes.jl")
-    include("core/GeoDataBackends.jl")
-    include("core/GeoDataCoordinates.jl")
-    include("core/GeoDataOperations.jl")
+# Core types and interfaces
+include("core/GeoDataTypes.jl")
+include("core/GeoDataBackends.jl")
+include("core/GeoDataCoordinates.jl")
+include("core/GeoDataOperations.jl")
 
-# Bring core modules into scope
 using .GeoDataTypes
 using .GeoDataBackends
 using .GeoDataCoordinates
 using .GeoDataOperations
 
-# Analysis over data already in hand: grid-to-grid interpolation, land/ocean tests, and
-# bathymetry interrogation. Included after the core types so their signatures resolve.
-#
-# The generic data layer holds no bundled geography. The coastline rings for this project's
-# study region live in GeoDataSources, which is where regional shipped data belongs; the
-# landmask takes whatever rings a caller gives it and applies no default of its own.
-    include("core/GeoDataOpenGrid.jl")
-    include("core/GeoDataLandmask.jl")
-    include("core/GeoDataBathy.jl")
+# Pure computational analysis: grid interpolation, land/water classification, bathymetry
+include("core/GeoDataOpenGrid.jl")
+include("core/GeoDataLandmask.jl")
+include("core/GeoDataBathy.jl")
 
-# Registry - include and bring into scope
-    include("backends/GeoDataRegistry.jl")
+# Registry
+include("backends/GeoDataRegistry.jl")
 using .GeoDataRegistry
 
 # Backend implementations
@@ -95,10 +74,7 @@ include("backends/zarr_backend.jl")
 include("backends/ncdatasets_backend.jl")
 include("backends/geoparquet_backend.jl")
 
-# Default backend capabilities, defined here beside the four implementations it covers.
-# A default declared inside `GeoDataBackends` never registered on the function the
-# backends extend, so an unlisted backend raised MethodError. Define it in this module,
-# after the concrete methods, so the fallback is always present.
+# Default backend capability fallback
 function backend_capabilities(backend::GeoBackend)
     return BackendCapabilities(read = true, write = true)
 end
@@ -197,11 +173,7 @@ export
     list_storage_variables,
     list_storage_groups
 
-# Convenience re-exports from dependencies
-# The backend readers stay private to this package. `@reexport`-ing them used to give
-# every consumer Zarr, GeoParquet, NCDatasets and GeoInterface transitively, so a caller
-# that never mentioned any of them still pulled them in and could not tell which names
-# were ours. Name what you use.
+# Explicit package imports
 using Zarr
 using GeoParquet
 using NCDatasets

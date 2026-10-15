@@ -1,6 +1,6 @@
 version = "0.1.0"
 name = "GeoData"
-authors = ["ParticleTracking Contributors"]
+authors = ["Jae S. Choi"]
 description = "Backend-agnostic geospatial data access: load, save, query, slice, index, join, aggregate across Zarr, NetCDF/NCZarr and GeoParquet."
 license = "MIT"
 uuid = "9b6fcbb8-86d6-11e9-1ce7-23a6bb139a78"
