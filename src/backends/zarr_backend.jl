@@ -258,8 +258,10 @@ function backend_write(backend::ZarrBackend, uri::AbstractString,
         check_declared_dims(sz, names, ds.dims)
         var_attrs = merge(Dict{String, Any}("_ARRAY_DIMENSIONS" => [string(nm) for nm in names]),
                           ga.attrs)
+        var_chunks = get(ga.attrs, "chunks", get(ga.attrs, :chunks, nothing))
+        chosen_chunks = isnothing(var_chunks) ? default_chunks(sz) : Tuple(var_chunks)
         zcreate(eltype(ga.data), g, name, sz...;
-                chunks = default_chunks(sz), attrs = var_attrs)
+                chunks = chosen_chunks, attrs = var_attrs)
         g.arrays[name][:] = ga.data
     end
 

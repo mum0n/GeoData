@@ -132,7 +132,30 @@ pass `create = true` or `overwrite = true` to initialize or replace storage.
 
 ---
 
-## 5. Dataset Invariants
+## 5. Global Shared Lakehouse Location
+
+All `Geo*` projects share a central data lakehouse configured through `GeoData`:
+
+```julia
+# Resolve the canonical lakehouse root directory
+root = lakehouse_dir()
+
+# Resolve a subpackage or product path (creates intermediate dirs if create=true)
+bathy_path = lakehouse_dir("GeoData", "bathymetry"; create = true)
+
+# Persistently set the lakehouse path for the active workspace in LocalPreferences.toml
+set_lakehouse_dir!("/path/to/shared/lakehouse")
+```
+
+The canonical root directory resolves with the following precedence:
+* `ENV["GEODATA_LAKEHOUSE"]` (highest precedence, 12-factor standard for HPC / containers / CI).
+* `LocalPreferences.toml` (`[GeoData] lakehouse_dir`).
+* User configuration file `~/.geodata/storage.toml` (`[storage] store_root`).
+* Proximity fallback: `normpath(joinpath(@__DIR__, "..", "..", "..", "lakehouse"))`.
+
+---
+
+## 6. Dataset Invariants
 
 Every dataset produced in testing is validated with `assert_dataset_invariants`:
 

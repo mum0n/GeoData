@@ -14,6 +14,7 @@ using DataFrames
 using Dates
 import Zarr
 import GeoParquet
+import TOML
 
 export GeoStorage,
        open_geostorage,
@@ -23,7 +24,9 @@ export GeoStorage,
        write_storage_variable!,
        read_storage_variable,
        list_storage_variables,
-       list_storage_groups
+       list_storage_groups,
+       lakehouse_dir,
+       set_lakehouse_dir!
 
 """
     GeoStorage
@@ -327,3 +330,80 @@ function read_storage_variable(storage::GeoStorage, var_path::AbstractString)
         return GeoParquet.read(target_file)
     end
 end
+
+"""
+    lakehouse_dir(subpaths...; create::Bool=false) -> String
+
+Resolve the canonical root directory of the shared data lakehouse across all
+projects. The resolution order is:
+1. Environment variable `GEODATA_LAKEHOUSE` (highest precedence).
+2. Project-level preference in `LocalPreferences.toml` (`[GeoData] lakehouse_dir`).
+3. User-level configuration file `~/.geodata/storage.toml` (`[storage] store_root`).
+4. Workspace proximity fallback `normpath(joinpath(@__DIR__, "..", "..", "..", "lakehouse"))`.
+
+If `subpaths` are provided, they are concatenated to the resolved root using `joinpath`.
+When `create=true`, any missing intermediate directories are created on disk.
+"""
+function lakehouse_dir(subpaths...; create::Bool = false)::String
+    root = if haskey(ENV, "GEODATA_LAKEHOUSE") && !isempty(ENV["GEODATA_LAKEHOUSE"])
+        ENV["GEODATA_LAKEHOUSE"]
+    else
+        local_pref = joinpath(pwd(), "LocalPreferences.toml")
+        val = ""
+        if isfile(local_pref)
+            try
+                parsed = TOML.parsefile(local_pref)
+                if haskey(parsed, "GeoData") && haskey(parsed["GeoData"], "lakehouse_dir")
+                    val = String(parsed["GeoData"]["lakehouse_dir"])
+                end
+            catch
+                val = ""
+            end
+        end
+        if isempty(val)
+            user_cfg = joinpath(homedir(), ".geodata", "storage.toml")
+            if isfile(user_cfg)
+                try
+                    parsed = TOML.parsefile(user_cfg)
+                    haskey(parsed, "storage") && haskey(parsed["storage"], "store_root") ?
+                        String(parsed["storage"]["store_root"]) : ""
+                catch
+                    ""
+                end
+            else
+                ""
+            end
+        else
+            val
+        end
+    end
+
+    if isempty(root)
+        candidate = normpath(joinpath(@__DIR__, "..", "..", "..", "lakehouse"))
+        root = isdir(candidate) ? candidate : normpath(joinpath(pwd(), "lakehouse"))
+    end
+
+    target = isempty(subpaths) ? root : joinpath(root, subpaths...)
+    if create && !isdir(target)
+        mkpath(target)
+    end
+    return normpath(target)
+end
+
+"""
+    set_lakehouse_dir!(path::AbstractString)
+
+Persistently set the shared lakehouse root path in `LocalPreferences.toml` under
+`[GeoData] lakehouse_dir`.
+"""
+function set_lakehouse_dir!(path::AbstractString)
+    local_pref = joinpath(pwd(), "LocalPreferences.toml")
+    cfg = isfile(local_pref) ? (try TOML.parsefile(local_pref) catch; Dict{String, Any}() end) : Dict{String, Any}()
+    geodata_dict = get!(cfg, "GeoData", Dict{String, Any}())
+    geodata_dict["lakehouse_dir"] = abspath(path)
+    open(local_pref, "w") do io
+        TOML.print(io, cfg)
+    end
+    return abspath(path)
+end
+

@@ -114,6 +114,10 @@ export
     is_cartesian,
     # Core functions
     geoload,
+    geoget,
+    register_source_provider!,
+    unregister_source_provider!,
+    list_source_providers,
     geosave,
     geoslice,
     geoselect,
@@ -171,7 +175,9 @@ export
     write_storage_variable!,
     read_storage_variable,
     list_storage_variables,
-    list_storage_groups
+    list_storage_groups,
+    lakehouse_dir,
+    set_lakehouse_dir!
 
 # Explicit package imports
 using Zarr

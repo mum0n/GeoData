@@ -53,7 +53,8 @@ function smooth_bathymetry(
     field::AbstractMatrix;
     passes::Integer = 4,
     alpha::Real = 0.5,
-    h_min::Real = 0.0
+    h_min::Real = 0.0,
+    h_max::Real = 0.0
 )
     smoothed = Float64.(collect(field))
     n_lon, n_lat = size(smoothed)
@@ -71,6 +72,9 @@ function smooth_bathymetry(
 
     if h_min > 0.0
         smoothed = ifelse.(smoothed .< 0, min.(smoothed, -Float64(h_min)), 0.0)
+    end
+    if h_max > 0.0
+        smoothed = ifelse.(smoothed .< -Float64(h_max), -Float64(h_max), smoothed)
     end
     return smoothed
 end

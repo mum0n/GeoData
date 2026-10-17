@@ -4,6 +4,14 @@
 using Markdown
 using InteractiveUtils
 
+# ╔═╡ 6b4da31c-2e9f-4a05-9c43-9d2f7a0e3c66
+# ╠═╡
+using Pkg
+
+# ╔═╡ 8d6fc53e-401b-4c27-9b65-bef4e5f10a88
+# ╠═╡
+Pkg.activate(@__DIR__)
+
 # ╔═╡ 4f2b8a19-0c7d-4e63-9a21-7b0d5e8c1a44
 # ╠═╡
 md"""
@@ -46,19 +54,11 @@ cell defines something and every later cell sees it, and re-running a cell re-ru
 downstream of it. That is what makes "change the slice and watch the answer move" cheap.
 """
 
-# ╔═╡ 6b4da31c-2e9f-4a05-9c43-9d2f7a0e3c66
-# ╠═╡
-using Pkg
-
 # ╔═╡ 7c5eb42d-3f0a-4b16-8a54-ae3a8b1f4d77
 # ╠═╡
 cd(joinpath(@__DIR__, ".."))
 
-# ╔═╡ 8d6fc53e-401b-4c27-9b65-bef4e5f10a88
-# ╠═╡
-Pkg.activate(@__DIR__)
-
-# ╔═╡ 9e70d64f-512c-4d38-9a76-cfa5a602b9e
+# ╔═╡ d213b7d0-ca2e-11f1-84d9-e7b99ec2f5a2
 # ╠═╡
 using GeoData
 using GeoData: GeoDataset, GeoArray, Dimension, CoordinateSystem
@@ -481,10 +481,16 @@ md"""
 - **No silent defaults.** An unknown backend, URI, dimension, or missing coordinate is an error.
   Nothing is filled in to make a call succeed.
 - **No guessed depth or time.** A dimension either has coordinates or it does not.
+
+### Global Shared Lakehouse Location
+
+`GeoData` provides the canonical location definition across all `Geo*` projects:
+- `lakehouse_dir(subpaths...)` resolves paths under `ENV["GEODATA_LAKEHOUSE"]`, `LocalPreferences.toml`, `~/.geodata/storage.toml`, or the workspace fallback.
+- `set_lakehouse_dir!(path)` saves the default lakehouse path into `LocalPreferences.toml`.
 """
 
-# ╔═╡ b1a20f9b-24bc-4d34-9e23-59d08652a95
-# ╔═╡ Cell order:
+# ╔═╡ d213dee0-ca2e-11f1-ab07-3dea5077f600
+# Cell order:
 # ╠═4f2b8a19-0c7d-4e63-9a21-7b0d5e8c1a44
 # ╠═5a3c920b-1d8e-4f74-8b32-8c1e6f9d2b55
 # ╠═6b4da31c-2e9f-4a05-9c43-9d2f7a0e3c66
@@ -508,4 +514,30 @@ md"""
 # ╠═8c1b2c09-0a2b-4f31-9b76-5c5729be6d8e
 # ╠═9d2c3d1a-1b3c-4a42-9c87-6d683a0f7e9f
 # ╠═a1ef4f42-2c5d-4b53-9d98-7e794b1f0a1b
-# ╠═b1a20f9b-24bc-4d34-9e23-59d08652a95
+# ╠═b1a20f9b-24bc-4d34-9e23-59d08652a9
+
+# ╔═╡ Cell order:
+# ╠═4f2b8a19-0c7d-4e63-9a21-7b0d5e8c1a44
+# ╠═5a3c920b-1d8e-4f74-8b32-8c1e6f9d2b55
+# ╠═6b4da31c-2e9f-4a05-9c43-9d2f7a0e3c66
+# ╠═7c5eb42d-3f0a-4b16-8a54-ae3a8b1f4d77
+# ╠═8d6fc53e-401b-4c27-9b65-bef4e5f10a88
+# ╠═d213b7d0-ca2e-11f1-84d9-e7b99ec2f5a2
+# ╠═af81e750-623d-4e49-9a87-d0b6b7130cfa
+# ╠═bf92f86a-734e-4f5a-9b98-e1c7c8241d0b
+# ╠═c0a39b14-846c-4f6b-9cb9-f2d8d9352e1c
+# ╠═d1b4c225-957d-4b6a-9dcb-a13e9f462f0d
+# ╠═e2c5d336-068e-4d7a-9aec-b2fa057f3a1b
+# ╠═f3d6e447-179f-4b8b-9afd-c3ab168c4b2c
+# ╠═04a7f558-2a90-4c9b-8b0f-d4bc279d5c3d
+# ╠═159b8604-3ca1-4dac-9d0f-e5cd390ef2d9
+# ╠═26bc9715-4b2e-4adb-8e10-f6de4b1fa2b3
+# ╠═37cad826-5c3e-4ebb-9f21-070f5c2ab3c4
+# ╠═48dbe937-6d4c-4fcc-9a32-181f6d3bc4d5
+# ╠═59ecf048-7e5d-4fdd-9b3c-2924088cd4d6
+# ╠═6afd1597-8a0e-4fde-9c54-3a35179ce5e7
+# ╠═7b02a0a8-9b1f-4ef0-9a65-4b4618adf6e8
+# ╠═8c1b2c09-0a2b-4f31-9b76-5c5729be6d8e
+# ╠═9d2c3d1a-1b3c-4a42-9c87-6d683a0f7e9f
+# ╠═a1ef4f42-2c5d-4b53-9d98-7e794b1f0a1b
+# ╠═d213dee0-ca2e-11f1-ab07-3dea5077f600
