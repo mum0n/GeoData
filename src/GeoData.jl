@@ -177,7 +177,8 @@ export
     list_storage_variables,
     list_storage_groups,
     lakehouse_dir,
-    set_lakehouse_dir!
+    set_lakehouse_dir!,
+    project_lakehouse_path
 
 # Explicit package imports
 using Zarr

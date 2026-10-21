@@ -407,3 +407,45 @@ function set_lakehouse_dir!(path::AbstractString)
     return abspath(path)
 end
 
+"""
+    project_lakehouse_path(path::AbstractString, project_root::AbstractString) -> String
+
+Resolve a configured output path against a *project root* rather than the current working
+directory, and tolerate the two layouts the lakehouse appears in:
+
+- `<project_root>/lakehouse/...`   — the lakehouse inside the project
+- `<project_root>/../lakehouse/...` — the lakehouse as a sibling of the project
+
+A relative path is first tried against the project root. If that names a `lakehouse`
+directory which does not exist but a sibling `../lakehouse` does, the sibling is used
+instead — so a config written for one layout still resolves in the other.
+
+An absolute path is returned unchanged. A relative path that does not name a lakehouse
+(e.g. `outputs/run`) is anchored to the project root, so a run does not land in a
+different place depending on the directory it was started from.
+
+# Inputs
+- `path`: The configured path, relative or absolute.
+- `project_root`: The root of the project the path belongs to.
+
+# Outputs
+An absolute path.
+"""
+function project_lakehouse_path(path::AbstractString, project_root::AbstractString)::String
+    isabspath(path) && return normpath(path)
+
+    root = normpath(project_root)
+    candidate = normpath(joinpath(root, path))
+
+    # A path written for the sibling layout, in a project that keeps the lakehouse inside:
+    # `../lakehouse/...` does not resolve, but `lakehouse/...` does.
+    if startswith(path, "../")
+        inner = normpath(joinpath(root, replace(path, "../" => "", count = 1)))
+        if !isdir(candidate) && isdir(inner)
+            return inner
+        end
+    end
+
+    return candidate
+end
+
