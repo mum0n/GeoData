@@ -91,6 +91,7 @@ include("api/index.jl")
 include("api/regrid.jl")
 include("api/aggregate.jl")
 include("api/storage.jl")
+include("api/run_state.jl")
 
 
 
@@ -178,7 +179,13 @@ export
     list_storage_groups,
     lakehouse_dir,
     set_lakehouse_dir!,
-    project_lakehouse_path
+    project_lakehouse_path,
+    # Run state: what a run leaves behind, and how it is asked to clear it
+    RunStateTarget,
+    run_state_targets,
+    confirm_run_state_purge,
+    apply_run_state_purge,
+    purge_run_state
 
 # Explicit package imports
 using Zarr
