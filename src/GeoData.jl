@@ -121,8 +121,10 @@ export
     list_source_providers,
     geosave,
     geoslice,
-    geoselect,
     geovalues,
+    # A Zarr store created with its variables' final shape and no data in them, for a
+    # caller that fills it a slice at a time.
+    create_zarr_template,
     geojoin,
     geoaggregate,
     geoindex,

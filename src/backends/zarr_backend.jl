@@ -174,6 +174,57 @@ function _declared_dimensions(record)
     return out
 end
 
+"""
+    create_zarr_template(uri::AbstractString; dims, attrs, variables) -> Zarr.Group
+
+Create a Zarr store whose variables have their FINAL SHAPE and no data in them, and
+return the group so the caller can write into the arrays as it goes.
+
+`geosave` cannot do this. It creates each variable's array with the right shape and
+chunking, and then writes the whole of the caller's array into it -- so a store of
+`nx × ny × nz × nt` values costs that much host memory at once, and that much disk,
+before a single value has been produced. For a store that is filled a slice at a time
+over days, that is the difference between a run that needs a few gigabytes and one that
+needs a few hundred, and the difference between finishing and dying.
+
+The layout is exactly the one `backend_write` produces, so `backend_open` reads a
+template-created store the same way it reads a saved one:
+
+  * the group carries the dimension record and the dataset's own attributes;
+  * each declared dimension with coordinates has a 1-D coordinate array;
+  * each variable has an array of the declared shape, chunked, with
+    `_ARRAY_DIMENSIONS` naming its axes.
+
+`variables` is a vector of `(name, shape, dim_names, chunks)` tuples. `chunks` may be
+`nothing` for the default.
+"""
+function create_zarr_template(uri::AbstractString;
+                              dims::Dict{Symbol, Dimension},
+                              attrs::Dict{String, Any} = Dict{String, Any}(),
+                              variables::Vector{<:Tuple{String, Tuple, Vector{String}, Any}})
+    path = strip_scheme(uri)
+    isdir(path) && rm(path; recursive = true)
+    g = zgroup(path; attrs = merge(_dimension_record(dims), attrs))
+
+    # Dimensions first: a coordinate array defines the axis its variables are chunked on.
+    for (dim, d) in dims
+        d.coords === nothing && continue
+        zcreate(Float64, g, string(dim), length(d.coords);
+                chunks = default_chunks((length(d.coords),)),
+                attrs = Dict{String, Any}("units" => something(d.units, "")))
+        g.arrays[string(dim)][:] = collect(Float64, d.coords)
+    end
+
+    for (name, shape, dim_names, chunks) in variables
+        chosen = isnothing(chunks) ? default_chunks(shape) : Tuple(chunks)
+        zcreate(Float32, g, name, shape...;
+                chunks = chosen,
+                attrs = Dict{String, Any}("_ARRAY_DIMENSIONS" => [String(n) for n in dim_names]))
+    end
+
+    return g
+end
+
 function backend_create(backend::ZarrBackend, uri::AbstractString,
                         dims::Dict{Symbol, Dimension}; kwargs...)
     path = strip_scheme(uri)
